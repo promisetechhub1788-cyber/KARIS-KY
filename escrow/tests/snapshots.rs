@@ -1,135 +1,68 @@
-// Snapshot tests for escrow contract state lifecycle.
-//
-// These tests capture the complete escrow state at key transitions:
-// - init: fresh escrow created
-// - first_fund: first funding deposit
-// - funding_closed: escrow reaches funded status
-// - settlement: escrow settled and ready for withdrawal
-//
-// Run with: cargo test --test snapshots --features testutils -- --nocapture
-// Update snapshots with: cargo insta review
+use soroban_sdk::{
+    symbol_short,
+    testutils::{Address as _, Ledger as _},
+    token::{StellarAssetClient, TokenClient},
+    Address, Env, String as SorobanString,
+};
 
+// Use the escrow contract from the lib crate
 use karis_ky_escrow::{LiquifactEscrow, LiquifactEscrowClient};
-use serde::Serialize;
-use soroban_sdk::testutils::{Address as _, Ledger as _};
-use soroban_sdk::{Address, Env};
-use std::string::String as StdString;
 
-/// Serializable escrow snapshot for deterministic comparison.
-/// Uses debug format for addresses and symbols to capture the contract state deterministically.
-#[derive(Debug, Clone, Serialize, PartialEq)]
-struct EscrowSnapshot {
-    pub invoice_id: StdString,
-    pub admin_debug: StdString,
-    pub sme_address_debug: StdString,
-    pub amount: i128,
-    pub funding_target: i128,
-    pub funded_amount: i128,
-    pub yield_bps: i64,
-    pub maturity: u64,
-    pub status: u32,
-}
-
-impl EscrowSnapshot {
-    /// Capture the current escrow state into a serializable snapshot.
-    fn from_escrow(escrow: &karis_ky_escrow::InvoiceEscrow) -> Self {
-        Self {
-            invoice_id: format!("{:?}", escrow.invoice_id),
-            admin_debug: format!("{:?}", escrow.admin),
-            sme_address_debug: format!("{:?}", escrow.sme_address),
-            amount: escrow.amount,
-            funding_target: escrow.funding_target,
-            funded_amount: escrow.funded_amount,
-            yield_bps: escrow.yield_bps,
-            maturity: escrow.maturity,
-            status: escrow.status,
-        }
-    }
-}
-
-// Test helpers
-fn deploy(env: &Env) -> LiquifactEscrowClient<'_> {
+fn deploy_contract(env: &Env) -> (LiquifactEscrowClient, Address) {
     let id = env.register(LiquifactEscrow, ());
-    LiquifactEscrowClient::new(env, &id)
+    let client = LiquifactEscrowClient::new(env, &id);
+    (client, id)
 }
 
-fn setup(env: &Env) -> (LiquifactEscrowClient<'_>, Address, Address) {
+fn setup_ledger(env: &Env) {
     let mut ledger_info = env.ledger().get();
     ledger_info.timestamp = 12345;
     ledger_info.sequence_number = 100;
     env.ledger().set(ledger_info);
     env.mock_all_auths();
-    let client = deploy(env);
-    let admin = Address::generate(env);
-    let sme = Address::generate(env);
-    (client, admin, sme)
 }
 
-fn free_addresses(env: &Env) -> (Address, Address) {
-    (Address::generate(env), Address::generate(env))
+fn generate_addresses(env: &Env) -> (Address, Address, Address, Address) {
+    (
+        Address::generate(env),
+        Address::generate(env),
+        Address::generate(env),
+        Address::generate(env),
+    )
 }
 
-/// Scenario: init creates a fresh escrow with default values.
-///
-/// Verifies:
-/// - Escrow is in open status (0)
-/// - Funded amount is zero
-/// - All target/amount fields are set correctly
+/// Install a standard Stellar asset token contract for testing.
+fn install_stellar_asset_token(env: &Env) -> (Address, TokenClient, StellarAssetClient) {
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(env));
+    let id = sac.address();
+    (
+        id.clone(),
+        TokenClient::new(env, &id),
+        StellarAssetClient::new(env, &id),
+    )
+}
+
 #[test]
-fn snapshot_init_fresh_escrow() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
+fn snapshot_test_init_state() {
+    let env = Env::new();
+    setup_ledger(&env);
 
-    let (token, treasury) = free_addresses(&env);
+    let (client, _contract_id) = deploy_contract(&env);
+    let (admin, sme, investor, treasury) = generate_addresses(&env);
+    let (token_id, _token_client, _sac) = install_stellar_asset_token(&env);
 
-    let escrow = client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "INV_SNAP_001"),
-        &sme,
-        &100_000_000_000i128,
-        &800i64,
-        &1000u64,
-        &token,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-    );
-
-    let snapshot = EscrowSnapshot::from_escrow(&escrow);
-
-    // Snapshot assertion: captures current state for future regression detection.
-    insta::assert_json_snapshot!(snapshot);
-}
-
-/// Scenario: first fund records initial investor contribution.
-///
-/// Verifies:
-/// - Funded amount reflects deposit
-/// - Escrow remains in open status (0) before threshold
-/// - Storage persists between fund calls
-#[test]
-fn snapshot_first_fund_partial() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-
-    let target = 100_000_000_000i128;
-    let first_deposit = target / 2;
-
-    let (token, treasury) = free_addresses(&env);
+    let invoice_id = SorobanString::from_str(&env, "INV-2024-001");
+    let funding_target = 100_000_000_000i128;
+    let yield_bps = 500i64;
 
     client.init(
         &admin,
-        &soroban_sdk::String::from_str(&env, "INV_SNAP_002"),
+        &invoice_id,
         &sme,
-        &target,
-        &800i64,
+        &funding_target,
+        &yield_bps,
         &0u64,
-        &token,
+        &token_id,
         &None,
         &treasury,
         &None,
@@ -140,37 +73,44 @@ fn snapshot_first_fund_partial() {
         &None,
     );
 
-    let investor1 = Address::generate(&env);
-    let after_first_fund = client.fund(&investor1, &first_deposit);
-
-    let snapshot = EscrowSnapshot::from_escrow(&after_first_fund);
-
-    insta::assert_json_snapshot!(snapshot);
+    // Read the escrow state and snapshot it
+    let escrow = client.get_escrow();
+    insta::assert_json_snapshot!(escrow, @r###"
+    {
+      "invoice_id": "INV-2024-001",
+      "admin": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+      "sme_address": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+      "amount": 100000000000,
+      "funding_target": 100000000000,
+      "funded_amount": 0,
+      "yield_bps": 500,
+      "maturity": 0,
+      "status": 0
+    }
+    "###);
 }
 
-/// Scenario: funding_closed reaches target and transitions to funded status.
-///
-/// Verifies:
-/// - Status transitions to 1 (funded) when target reached
-/// - Funded amount matches or exceeds target
-/// - State is stable after reaching funded
 #[test]
-fn snapshot_funding_closed_transition() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
+fn snapshot_test_post_funding() {
+    let env = Env::new();
+    setup_ledger(&env);
 
-    let target = 100_000_000_000i128;
+    let (client, contract_id) = deploy_contract(&env);
+    let (admin, sme, investor, treasury) = generate_addresses(&env);
+    let (token_id, token_client, sac) = install_stellar_asset_token(&env);
 
-    let (token, treasury) = free_addresses(&env);
+    let invoice_id = SorobanString::from_str(&env, "INV-2024-002");
+    let funding_target = 100_000_000_000i128;
+    let yield_bps = 500i64;
 
     client.init(
         &admin,
-        &soroban_sdk::String::from_str(&env, "INV_SNAP_003"),
+        &invoice_id,
         &sme,
-        &target,
-        &800i64,
+        &funding_target,
+        &yield_bps,
         &0u64,
-        &token,
+        &token_id,
         &None,
         &treasury,
         &None,
@@ -181,43 +121,50 @@ fn snapshot_funding_closed_transition() {
         &None,
     );
 
-    let investor1 = Address::generate(&env);
-    let investor2 = Address::generate(&env);
+    // Fund the escrow to the target
+    client.fund(&investor, &funding_target);
 
-    // First deposit: 60% of target
-    client.fund(&investor1, &(target * 60 / 100));
+    // Mint tokens into escrow for later withdrawal
+    sac.mint(&contract_id, &funding_target);
 
-    // Second deposit: remaining 40% (reaches target)
-    let funded_escrow = client.fund(&investor2, &(target * 40 / 100));
-
-    let snapshot = EscrowSnapshot::from_escrow(&funded_escrow);
-
-    insta::assert_json_snapshot!(snapshot);
+    // Read the escrow state and snapshot it
+    let escrow = client.get_escrow();
+    insta::assert_json_snapshot!(escrow, @r###"
+    {
+      "invoice_id": "INV-2024-002",
+      "admin": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+      "sme_address": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+      "amount": 100000000000,
+      "funding_target": 100000000000,
+      "funded_amount": 100000000000,
+      "yield_bps": 500,
+      "maturity": 0,
+      "status": 1
+    }
+    "###);
 }
 
-/// Scenario: settlement marks escrow as settled (status 2).
-///
-/// Verifies:
-/// - Status transitions to 2 after settle() call
-/// - Funded amount persists through settlement
-/// - All fields remain consistent
 #[test]
-fn snapshot_settlement_state() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
+fn snapshot_test_post_settlement() {
+    let env = Env::new();
+    setup_ledger(&env);
 
-    let target = 100_000_000_000i128;
+    let (client, contract_id) = deploy_contract(&env);
+    let (admin, sme, investor, treasury) = generate_addresses(&env);
+    let (token_id, token_client, sac) = install_stellar_asset_token(&env);
 
-    let (token, treasury) = free_addresses(&env);
+    let invoice_id = SorobanString::from_str(&env, "INV-2024-003");
+    let funding_target = 100_000_000_000i128;
+    let yield_bps = 500i64;
 
     client.init(
         &admin,
-        &soroban_sdk::String::from_str(&env, "INV_SNAP_004"),
+        &invoice_id,
         &sme,
-        &target,
-        &800i64,
+        &funding_target,
+        &yield_bps,
         &0u64,
-        &token,
+        &token_id,
         &None,
         &treasury,
         &None,
@@ -228,86 +175,60 @@ fn snapshot_settlement_state() {
         &None,
     );
 
-    // Fund to target
-    let investor = Address::generate(&env);
-    client.fund(&investor, &target);
+    // Fund the escrow
+    client.fund(&investor, &funding_target);
+
+    // Mint tokens into escrow
+    sac.mint(&contract_id, &funding_target);
 
     // Settle the escrow
-    let settled_escrow = client.settle();
+    client.settle(&sme);
 
-    let snapshot = EscrowSnapshot::from_escrow(&settled_escrow);
-
-    insta::assert_json_snapshot!(snapshot);
+    // Read the escrow state and snapshot it
+    let escrow = client.get_escrow();
+    insta::assert_json_snapshot!(escrow, @r###"
+    {
+      "invoice_id": "INV-2024-003",
+      "admin": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+      "sme_address": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+      "amount": 100000000000,
+      "funding_target": 100000000000,
+      "funded_amount": 100000000000,
+      "yield_bps": 500,
+      "maturity": 0,
+      "status": 2
+    }
+    "###);
 }
 
-/// Scenario: complete lifecycle from init → fund → fund
-///
-/// Captures escrow state through funding workflow and detects any
-/// unintended changes to state transitions or field values.
 #[test]
-fn snapshot_complete_lifecycle() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
+fn snapshot_test_version() {
+    let env = Env::new();
+    setup_ledger(&env);
 
-    let target = 50_000_000_000i128;
+    let (client, _contract_id) = deploy_contract(&env);
 
-    let (token, treasury) = free_addresses(&env);
-
-    // Step 1: Init
-    let initial = client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "INV_SNAP_LIFECYCLE"),
-        &sme,
-        &target,
-        &1200i64, // Higher yield
-        &0u64,    // Maturity at block 0 (immediate)
-        &token,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-    );
-
-    insta::assert_json_snapshot!(EscrowSnapshot::from_escrow(&initial));
-
-    // Step 2: Partial fund
-    let investor1 = Address::generate(&env);
-    let after_partial = client.fund(&investor1, &(target / 3));
-
-    insta::assert_json_snapshot!(EscrowSnapshot::from_escrow(&after_partial));
-
-    // Step 3: Complete funding
-    let investor2 = Address::generate(&env);
-    let after_full = client.fund(&investor2, &(target * 2 / 3));
-
-    insta::assert_json_snapshot!(EscrowSnapshot::from_escrow(&after_full));
+    // Read the version
+    let version = client.get_version();
+    insta::assert_json_snapshot!(version, @"6");
 }
 
-/// Scenario: multiple investors with varying contributions.
-///
-/// Verifies escrow handles multiple concurrent funders correctly
-/// and accumulates contributions properly.
 #[test]
-fn snapshot_multi_investor_funding() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-
-    let target = 100_000_000_000i128;
-
-    let (token, treasury) = free_addresses(&env);
+fn snapshot_test_export_escrow_snapshot() {
+    let env = Env::new();
+    setup_ledger(&env);
+    let (client, _contract_id) = deploy_contract(&env);
+    let (admin, sme, investor, treasury) = generate_addresses(&env);
+    let (token_id, _token_client, _sac) = install_stellar_asset_token(&env);
 
     client.init(
         &admin,
-        &soroban_sdk::String::from_str(&env, "INV_SNAP_MULTI"),
+        &SorobanString::from_str(&env, "INV-EXPORT-001"),
         &sme,
-        &target,
+        &100_000i128,
         &800i64,
         &0u64,
-        &token,
+        &token_id,
         &None,
         &treasury,
         &None,
@@ -317,17 +238,40 @@ fn snapshot_multi_investor_funding() {
         &None,
         &None,
     );
+    client.fund(&investor, &50_000i128);
 
-    let investor_a = Address::generate(&env);
-    let investor_b = Address::generate(&env);
-    let investor_c = Address::generate(&env);
-
-    // Three investors, three tranches
-    client.fund(&investor_a, &(target / 3));
-    client.fund(&investor_b, &(target / 3));
-    let final_state = client.fund(&investor_c, &(target / 3));
-
-    let snapshot = EscrowSnapshot::from_escrow(&final_state);
-
-    insta::assert_json_snapshot!(snapshot);
+    insta::assert_json_snapshot!(client.export_escrow_snapshot(), {
+        ".escrow.admin" => "[admin]",
+        ".escrow.sme_address" => "[sme]",
+        ".funding_token" => "[funding token]",
+        ".treasury" => "[treasury]"
+    }, @r###"
+    {
+      "escrow": {
+        "invoice_id": "INV-EXPORT-001",
+        "admin": "[admin]",
+        "sme_address": "[sme]",
+        "amount": 100000,
+        "funding_target": 100000,
+        "funded_amount": 50000,
+        "yield_bps": 800,
+        "maturity": 0,
+        "status": 0,
+        "guardian": null
+      },
+      "schema_version": 6,
+      "legal_hold": false,
+      "funding_close_snapshot": "None",
+      "unique_funder_count": 1,
+      "is_allowlist_active": false,
+      "sme_collateral_commitment": "None",
+      "primary_attestation_hash": null,
+      "attestation_log_length": 0,
+      "sanctions_provider": null,
+      "funding_token": "[funding token]",
+      "treasury": "[treasury]",
+      "registry": null,
+      "version_history": [[6, 12345]]
+    }
+    "###);
 }

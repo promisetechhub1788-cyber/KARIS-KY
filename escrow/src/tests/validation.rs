@@ -5,8 +5,8 @@
 #[cfg(test)]
 mod validation_tests {
     use crate::{
-        validation::*, EscrowError, LiquifactEscrow, LiquifactEscrowClient, SCHEMA_VERSION,
-        MAX_FUND_BATCH, MAX_INVESTOR_ALLOWLIST_BATCH,
+        validation::*, EscrowError, LiquifactEscrow, LiquifactEscrowClient, MAX_FUND_BATCH,
+        MAX_INVESTOR_ALLOWLIST_BATCH, SCHEMA_VERSION,
     };
     use soroban_sdk::{
         symbol_short,
@@ -36,10 +36,10 @@ mod validation_tests {
     #[test]
     fn test_invoice_id_valid_cases() {
         let env = setup_env();
-        
+
         // Single character
         let valid_ids = vec!["a", "Z", "0", "_", "invoice_123", "INV_001", "test_id"];
-        
+
         for id_str in valid_ids {
             let invoice_id: String = id_str.into();
             let result = validate_invoice_id(&env, &invoice_id);
@@ -80,23 +80,19 @@ mod validation_tests {
         let env = setup_env();
 
         let invalid_ids = vec![
-            "inv-id",      // hyphen
-            "inv.id",      // dot
-            "inv@id",      // at symbol
-            "inv id",      // space
-            "inv\tid",     // tab
-            "inv#id",      // hash
-            "inv$id",      // dollar
+            "inv-id",  // hyphen
+            "inv.id",  // dot
+            "inv@id",  // at symbol
+            "inv id",  // space
+            "inv\tid", // tab
+            "inv#id",  // hash
+            "inv$id",  // dollar
         ];
 
         for id_str in invalid_ids {
             let invoice_id: String = id_str.into();
             let result = validate_invoice_id(&env, &invoice_id);
-            assert!(
-                result.is_err(),
-                "Invalid chars should fail for: {}",
-                id_str
-            );
+            assert!(result.is_err(), "Invalid chars should fail for: {}", id_str);
         }
     }
 
@@ -187,8 +183,13 @@ mod validation_tests {
         assert!(validate_not_exceeds(5, 10, EscrowError::YieldBpsOutOfRange).is_ok());
         assert!(validate_not_exceeds(10, 10, EscrowError::YieldBpsOutOfRange).is_ok());
         assert!(validate_not_exceeds(11, 10, EscrowError::YieldBpsOutOfRange).is_err());
-        assert!(validate_not_exceeds(i128::MAX, i128::MAX, EscrowError::YieldBpsOutOfRange).is_ok());
-        assert!(validate_not_exceeds(i128::MAX, i128::MAX - 1, EscrowError::YieldBpsOutOfRange).is_err());
+        assert!(
+            validate_not_exceeds(i128::MAX, i128::MAX, EscrowError::YieldBpsOutOfRange).is_ok()
+        );
+        assert!(
+            validate_not_exceeds(i128::MAX, i128::MAX - 1, EscrowError::YieldBpsOutOfRange)
+                .is_err()
+        );
     }
 
     /// Test strictly lower validation (monotonic decrements)
@@ -225,11 +226,15 @@ mod validation_tests {
     fn test_positive_value() {
         assert!(validate_positive_value(1, EscrowError::MinContributionNotPositive).is_ok());
         assert!(validate_positive_value(1000, EscrowError::MinContributionNotPositive).is_ok());
-        assert!(validate_positive_value(i128::MAX, EscrowError::MinContributionNotPositive).is_ok());
+        assert!(
+            validate_positive_value(i128::MAX, EscrowError::MinContributionNotPositive).is_ok()
+        );
 
         assert!(validate_positive_value(0, EscrowError::MinContributionNotPositive).is_err());
         assert!(validate_positive_value(-1, EscrowError::MinContributionNotPositive).is_err());
-        assert!(validate_positive_value(i128::MIN, EscrowError::MinContributionNotPositive).is_err());
+        assert!(
+            validate_positive_value(i128::MIN, EscrowError::MinContributionNotPositive).is_err()
+        );
     }
 
     /// Test nonzero validation
@@ -261,8 +266,7 @@ mod validation_tests {
         let empty: String = "".into();
         let not_empty: String = "test".into();
 
-        let empty_result =
-            validate_string_not_empty(&empty, EscrowError::CollateralAssetEmpty);
+        let empty_result = validate_string_not_empty(&empty, EscrowError::CollateralAssetEmpty);
         let not_empty_result =
             validate_string_not_empty(&not_empty, EscrowError::CollateralAssetEmpty);
 
@@ -278,10 +282,14 @@ mod validation_tests {
         let addr2 = Address::generate(&env);
 
         // Different addresses should pass
-        assert!(validate_addresses_differ(&addr1, &addr2, EscrowError::NewSmeSameAsCurrent).is_ok());
+        assert!(
+            validate_addresses_differ(&addr1, &addr2, EscrowError::NewSmeSameAsCurrent).is_ok()
+        );
 
         // Same address should fail
-        assert!(validate_addresses_differ(&addr1, &addr1, EscrowError::NewSmeSameAsCurrent).is_err());
+        assert!(
+            validate_addresses_differ(&addr1, &addr1, EscrowError::NewSmeSameAsCurrent).is_err()
+        );
     }
 
     /// Integration test: invalid init parameters caught by validation
@@ -313,8 +321,8 @@ mod validation_tests {
             &None,
             &None,
             &None,
-        &None,
-        &None,
+            &None,
+            &None,
         );
 
         // Should fail with AmountMustBePositive
@@ -350,8 +358,8 @@ mod validation_tests {
             &None,
             &None,
             &None,
-        &None,
-        &None,
+            &None,
+            &None,
         );
 
         // Should fail with YieldBpsOutOfRange
@@ -387,8 +395,8 @@ mod validation_tests {
             &None,
             &None,
             &None,
-        &None,
-        &None,
+            &None,
+            &None,
         );
 
         // Should fail with InvoiceIdInvalidLength
@@ -424,8 +432,8 @@ mod validation_tests {
             &None,
             &None,
             &None,
-        &None,
-        &None,
+            &None,
+            &None,
         );
 
         // Should fail with MinContributionNotPositive
@@ -461,8 +469,8 @@ mod validation_tests {
             &None,
             &None,
             &None,
-        &None,
-        &None,
+            &None,
+            &None,
         );
 
         // Should fail with MinContributionExceedsAmount

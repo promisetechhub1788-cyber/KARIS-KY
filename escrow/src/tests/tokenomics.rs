@@ -42,17 +42,11 @@ fn expected_settle_pool(principal: i128, yield_bps: i64) -> i128 {
         .expect("yield coupon overflow")
         .checked_div(10_000)
         .expect("yield coupon divide by zero");
-    principal
-        .checked_add(coupon)
-        .expect("settle pool overflow")
+    principal.checked_add(coupon).expect("settle pool overflow")
 }
 
 /// Compute expected pro-rata payout for an investor (floor division).
-fn expected_payout(
-    investor_contribution: i128,
-    total_principal: i128,
-    settle_pool: i128,
-) -> i128 {
+fn expected_payout(investor_contribution: i128, total_principal: i128, settle_pool: i128) -> i128 {
     investor_contribution
         .checked_mul(settle_pool)
         .expect("payout numerator overflow")

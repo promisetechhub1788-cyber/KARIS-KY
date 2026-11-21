@@ -1,6 +1,6 @@
 # SME Collateral Commitment Metadata
 
-`record_sme_collateral_commitment(asset, amount)` in [`escrow/src/lib.rs`](../escrow/src/lib.rs) is a metadata-only Soroban escrow entrypoint. It allows the configured SME address to report collateral metadata for off-chain review, but it does **not** move, reserve, escrow, freeze, or verify any asset on-chain.
+`record_sme_collateral_commitment(asset, amount, collateral_type)` in [`escrow/src/lib.rs`](../escrow/src/lib.rs) is a metadata-only Soroban escrow entrypoint. It allows the configured SME address to report collateral metadata for off-chain review, but it does **not** move, reserve, escrow, freeze, or verify any asset on-chain.
 
 ## Limitations & Contrast with Custody Flows
 
@@ -24,8 +24,8 @@ Only the configured SME address (`InvoiceEscrow::sme_address`) is authorized to 
 The contract validates inputs and state before recording:
 - **Positive Amount:** The `amount` parameter must be strictly positive (`amount > 0`). If it is zero or negative, the contract panics with [`EscrowError::CollateralAmountNotPositive`].
 - **Non-empty Asset Symbol:** The `asset` parameter must be a non-empty Symbol (`asset != Symbol::new(&env, "")`). If an empty symbol is passed, the contract panics with [`EscrowError::CollateralAssetEmpty`].
-- **Monotonic Timestamp on Update:** When updating an existing commitment, the current ledger timestamp (`Env::ledger().timestamp()`) must not be earlier than the `updated_at` of the prior record (`now >= prior_commitment.updated_at`). This guards against stale out-of-order writes. If the timestamp goes backwards, the contract panics with [`EscrowError::CollateralTimestampBackwards`].
-- **No Updates After Settlement:** Once the escrow has reached a terminal or post-settlement state (`status >= 2`: settled, withdrawn, or cancelled), **updates** to an existing commitment are blocked with [`EscrowError::CollateralUpdateAfterSettlement`]. An **initial** record (when no prior commitment exists) is still permitted regardless of status.
+- **Non-empty Collateral Type:** The `collateral_type` parameter must be a non-empty string. If an empty string is passed, the contract panics with [`EscrowError::CollateralTypeEmpty`].
+- **Monotonic Timestamp on Replacement:** When replacing an existing commitment, the current ledger timestamp from `Env::ledger().timestamp()` must not be earlier than the previously recorded timestamp (`now >= prior_commitment.recorded_at`). This acts as a defense-in-depth against stale out-of-order writes. If the timestamp goes backwards, the contract panics with [`EscrowError::CollateralTimestampBackwards`].
 
 ### 3. Storage
 The contract writes the metadata record under [`DataKey::SmeCollateralPledge`] in the instance storage. This completely replaces any previously recorded commitment.
@@ -33,17 +33,8 @@ The contract writes the metadata record under [`DataKey::SmeCollateralPledge`] i
 The recorded data is represented by the [`SmeCollateralCommitment`] struct:
 - `asset`: `Symbol` – the off-chain asset symbol.
 - `amount`: `i128` – the reported amount.
-- `recorded_at`: `u64` – the Soroban ledger timestamp when the commitment was **first** written. This field is **immutable**: it is set once on the initial call and is preserved unchanged on every subsequent update. Off-chain indexers can use this to determine when collateral was originally pledged.
-- `updated_at`: `u64` – the Soroban ledger timestamp of the **most recent** write, whether the initial record or a correction. On the first write, `updated_at == recorded_at`. On each subsequent update, `updated_at` advances to the current ledger timestamp while `recorded_at` remains fixed. Off-chain indexers should use this field to detect that a collateral record has been revised.
-
-#### Update semantics
-
-| Call | `recorded_at` | `updated_at` |
-|------|--------------|-------------|
-| First record | `now` | `now` |
-| Subsequent update | preserved from first record | `now` (current ledger timestamp) |
-
-The distinction matters for off-chain auditors: `recorded_at` anchors the original pledge date, while `updated_at` tracks the most recent revision. Both fields are always present in the stored struct; they are equal when no update has occurred.
+- `recorded_at`: `u64` – the Soroban ledger timestamp when the commitment was written.
+- `collateral_type`: `String` – a descriptive categorization of the collateral pledge (non-empty).
 
 To retrieve the current record, external callers can use [`LiquifactEscrow::get_sme_collateral_commitment`].
 

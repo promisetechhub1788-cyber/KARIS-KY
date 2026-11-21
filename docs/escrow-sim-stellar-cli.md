@@ -28,6 +28,7 @@
 14. [Admin Operations](#14-admin-operations)
 15. [Auth Flags Reference](#15-auth-flags-reference)
 16. [Security Notes](#16-security-notes)
+17. [Interactive REPL CLI (FEATURE_220)](#17-interactive-repl-cli-feature_220)
 
 ---
 
@@ -989,3 +990,119 @@ observed ledger time), not wall-clock time. Maturity and commitment lock boundar
 The optional `registry` address stored at `init` is a **discoverability hint for indexers only**.
 It is not verified or called by this contract and must not be used as proof of registry state
 without independent verification.
+
+---
+
+## 17. Interactive REPL CLI (FEATURE_220)
+
+The `escrow-repl` tool provides an interactive CLI for inspecting contract state without writing test code.
+
+### Build and run
+
+```bash
+cd repl-cli
+cargo build --release
+./target/release/escrow-repl --network local --contract <ESCROW_CONTRACT_ID>
+```
+
+### Demo mode (no contract needed)
+
+```bash
+./target/release/escrow-repl
+```
+
+Runs with mock data, useful for testing command syntax.
+
+### Available commands
+
+#### `get_escrow`
+
+Fetch current escrow state:
+
+```
+escrow> get_escrow
+{
+  "invoice_id": "INV_001",
+  "status": 1,
+  "funded_amount": 95000000,
+  "funding_target": 100000000,
+  ...
+}
+```
+
+#### `get_version`
+
+Fetch contract schema version:
+
+```
+escrow> get_version
+{
+  "schema_version": 7,
+  "contract_version": "0.1.0",
+  "build_timestamp": "2026-08-29T09:15:05Z"
+}
+```
+
+#### `is_dispute_paused`
+
+Check if dispute pause is active:
+
+```
+escrow> is_dispute_paused
+{
+  "is_paused": false,
+  "pause_ticket_id": null,
+  "resumes_at": null
+}
+```
+
+#### `export_state`
+
+Export complete state snapshot for backup or migration:
+
+```
+escrow> export_state | jq . | less
+{
+  "schema_version": 7,
+  "escrow": { ... },
+  "funding_token": "TTOKEN...",
+  "treasury": "GTREASURY...",
+  "legal_hold": false,
+  "unique_funder_count": 42,
+  ...
+}
+```
+
+### Piping and processing
+
+All output is pretty-printed JSON, suitable for piping to tools like `jq`:
+
+```bash
+# Filter escrow summary
+escrow> get_escrow | jq '{status, funded_amount, funding_target}'
+
+# Save snapshot to file
+escrow> export_state > backup.json
+
+# Extract legal hold state
+escrow> export_state | jq '.legal_hold'
+```
+
+### Help
+
+```
+escrow> help
+escrow> help export_state
+escrow> quit
+```
+
+### Limitations (MVP)
+
+- **Read-only:** Inspection only; no state mutations (use `stellar contract invoke` for write operations)
+- **Demo mode:** Real RPC integration planned for future releases
+- **Single network:** Use `--network local|testnet|mainnet` or `--rpc-url` to switch
+
+### See Also
+
+- [repl-cli/README.md](../repl-cli/README.md) — Full REPL documentation
+- [FEATURE_220_REPL_DESIGN.md](../FEATURE_220_REPL_DESIGN.md) — Design specification

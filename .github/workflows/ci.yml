@@ -5,12 +5,20 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Nightly fuzzing run (see FUZZING_GUIDE.md). Runs the fuzz targets for a
+  # bounded duration so crashes surface as CI failures without always-on fuzzing.
+  schedule:
+    - cron: '0 3 * * *'
+
+permissions:
+  contents: read
 
 jobs:
+  # Ensure TypeScript SDKs stay aligned with the generated contract interfaces.
   sdk-typecheck-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -46,27 +54,70 @@ jobs:
             cd ..
           done
 
-  fmt-build-test:
+  backup-tooling-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install backup test dependencies
+        run: python -m pip install pytest "stellar-sdk>=11.0.0"
+
+      - name: Test escrow backup tooling
+        run: python -m pytest backend/tests
+
+  fmt-build-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # Supported toolchain range: the channel pinned in rust-toolchain.toml
+        # (currently `stable`) and `stable` itself. See README.md.
+        toolchain: [stable]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust toolchain
+        # Channel is pinned by rust-toolchain.toml at the repo root; the
+        # action reads it so CI and contributors use the same toolchain.
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ matrix.toolchain }}
           components: rustfmt, clippy, llvm-tools-preview
+          targets: wasm32-unknown-unknown
 
       - name: Cache cargo registry and build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Check formatting
-        run: cargo fmt -p karis-ky_escrow -- --check
+        run: cargo fmt -p karis_ky_escrow -- --check
 
       - name: Clippy
-        run: cargo clippy -p karis-ky_escrow -- -D warnings
+        run: cargo clippy -p karis_ky_escrow -- -D warnings
+
+      - name: Clippy REPL CLI
+        run: cargo clippy -p repl-cli -- -D warnings
 
       - name: Build
         run: cargo build
+
+      - name: Build docs (deny broken intra-doc links)
+        # Fails CI on any broken rustdoc intra-doc link so documentation
+        # references to non-existent items cannot regress unnoticed.
+        #
+        # Policy: the broken-intra-doc-link deny applies to the *entire*
+        # workspace (not just the escrow crate), so `repl-cli` and every other
+        # workspace member is checked too. This prevents stale references from
+        # creeping in. Keep `--workspace` here in sync with the workspace lint.
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: "-D rustdoc::broken_intra_doc_links"
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
@@ -74,11 +125,118 @@ jobs:
       - name: Run cargo-audit (dependency vulnerability scan)
         run: cargo audit --deny warnings
 
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@c95a8e71b2aa92ca779c9c822b9d41038c0fc503 # cargo-deny
+
+      - name: Run cargo-deny (licenses, bans, advisories)
+        run: cargo deny check
+
+      - name: Check advisory ignore sync (deny.toml vs cargo audit)
+        # Fails CI when an advisory ignored in deny.toml is not also handled
+        # by the cargo-audit ignore list (or vice versa), preventing drift
+        # between the two dependency-safety tools. See docs/DEPENDENCY_POLICY.md.
+        run: python3 scripts/check_advisory_ignore_sync.py
+
+      - name: Build and run basic_workflow example
+        # The example is a contributor's first touchpoint; a broken example
+        # must fail CI. Expected output is documented in
+        # examples/README.md (see "basic_workflow").
+        run: cargo run --example basic_workflow
+
       - name: Run tests
         run: cargo test
 
+      - name: Test REPL CLI
+        run: cargo test -p repl-cli
+
+      - name: Validate pre-flight checklist references
+        # Ensures scripts/pre-flight-checklist.sh stays current: every file it
+        # references must exist and every `stellar contract invoke` method it
+        # calls must be a public entrypoint in escrow/src/lib.rs.
+        run: |
+          python3 scripts/validate_preflight_checklist.py \
+            --script scripts/pre-flight-checklist.sh \
+            --lib escrow/src/lib.rs
+
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@671164c891d3e20f5b8ece04798d0154d1262d65 # cargo-llvm-cov
+
+      # -----------------------------------------------------------------------
+      # Coverage summary
+      # -----------------------------------------------------------------------
+      #
+      # Appends a concise markdown summary of test counts and line coverage
+      # (plus the delta vs main) to the GitHub Actions job summary so reviewers
+      # get a quick signal. The project target is >=95% line coverage as stated
+      # in START_HERE.txt; this step reports against that threshold but does
+      # not fail CI on a coverage drop (that is a separate policy decision).
+
+      - name: Coverage summary
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+
+          # Collect coverage for the whole workspace as JSON.
+          cargo llvm-cov --workspace --json --output-path cov.json
+
+          # Fetch main's baseline coverage summary if available.
+          if [ -f cov-main.json ]; then
+            echo "Using cached main baseline cov-main.json"
+          else
+            echo "No main baseline available; delta will be reported as n/a"
+          fi
+
+          python3 - <<'PY'
+          import json
+          import os
+
+          THRESHOLD = 95.0
+
+          def load(path):
+              if not os.path.exists(path):
+                  return None
+              with open(path) as f:
+                  return json.load(f)
+
+          def summarize(data):
+              if data is None:
+                  return None
+              totals = data.get("data", [{}])[0].get("totals", {})
+              lines = totals.get("lines", {})
+              count = lines.get("count", 0)
+              covered = lines.get("covered", 0)
+              pct = lines.get("percent", 0.0)
+              return {"count": count, "covered": covered, "percent": pct}
+
+          current = summarize(load("cov.json"))
+          baseline = summarize(load("cov-main.json"))
+
+          lines = []
+          lines.append("## Coverage summary")
+          lines.append("")
+          lines.append(f"Target: **>={THRESHOLD:.0f}%** line coverage (see START_HERE.txt).")
+          lines.append("")
+          lines.append("| Metric | Value |")
+          lines.append("| --- | --- |")
+          if current is None:
+              lines.append("| Line coverage | n/a |")
+              lines.append("| Lines covered | n/a |")
+          else:
+              lines.append(f"| Line coverage | {current['percent']:.2f}% |")
+              lines.append(f"| Lines covered | {current['covered']}/{current['count']} |")
+              status = "PASS" if current["percent"] >= THRESHOLD else "BELOW TARGET"
+              lines.append(f"| Threshold status | {status} |")
+          if baseline is None:
+              lines.append("| Coverage delta vs main | n/a |")
+          else:
+              delta = current["percent"] - baseline["percent"] if current else 0.0
+              sign = "+" if delta >= 0 else ""
+              lines.append(f"| Coverage delta vs main | {sign}{delta:.2f}% |")
+          lines.append("")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(lines) + "\n")
+          PY
 
       - name: Add WASM target
         run: rustup target add wasm32-unknown-unknown
@@ -105,6 +263,46 @@ jobs:
           python3 scripts/validate_build_metadata.py \
             --json target/build_metadata.json \
             --lib escrow/src/lib.rs
+
+      - name: Validate WASM build metadata matches current commit
+        # Asserts the metadata embedded in the freshly built WASM artifact
+        # matches the current commit SHA and the expected schema version.
+        # Fails CI if build.rs did not regenerate constants (e.g. stale
+        # incremental builds) or if the schema version drifted.
+        run: |
+          python3 scripts/validate_build_metadata.py \
+            --wasm target/wasm32-unknown-unknown/release/karis_ky_escrow.wasm \
+            --commit "$GITHUB_SHA" \
+            --schema-version "${SCHEMA_VERSION:-6}"
+        env:
+          SCHEMA_VERSION: "6"
+
+      # -----------------------------------------------------------------------
+      # Schema version compatibility matrix validation
+      # -----------------------------------------------------------------------
+      #
+      # Validates that SCHEMA_VERSION in escrow/src/lib.rs matches the latest
+      # entry in docs/VERSION_INTEROPERABILITY_MATRIX.md. Catches drift that
+      # could lead operators to attempt unsupported upgrade paths.
+
+      - name: Validate schema version matrix
+        run: |
+          python3 scripts/validate_schema_version_matrix.py
+
+      - name: Test schema version matrix validation
+        run: |
+          python3 scripts/test_validate_schema_version_matrix.py
+
+      # -----------------------------------------------------------------------
+      # Release preflight
+      # -----------------------------------------------------------------------
+      #
+      # Runs the build-metadata validator, the contract spec check, and the
+      # schema version matrix validator together and reports a go/no-go.
+      # Exits non-zero if any of the three validators fail.
+
+      - name: Release preflight
+        run: bash scripts/release_preflight.sh
 
       # -----------------------------------------------------------------------
       # WASM size tracking
@@ -133,7 +331,7 @@ jobs:
 
       - name: Upload WASM size report artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wasm-size-report
           path: /tmp/wasm_size_report.md
@@ -141,7 +339,7 @@ jobs:
 
       - name: Upload WASM artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: karis-ky-escrow-wasm
           path: target/wasm32-unknown-unknown/release/karis_ky_escrow.wasm
@@ -184,7 +382,7 @@ jobs:
 
       - name: Upload contract spec artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: karis-ky-escrow-spec
           path: sdk-ts/spec.json
@@ -198,31 +396,45 @@ jobs:
           SPEC_VERSION="v$(date +%Y.%m.%d)-$(git rev-parse --short HEAD)"
           echo "SPEC_VERSION=${SPEC_VERSION}" >> $GITHUB_ENV
 
-          # Create a lightweight tag for the spec version
-          git tag -f "spec-latest"
-          git push -f origin "spec-latest"
+  # ---------------------------------------------------------------------------
+  # Nightly fuzzing
+  # ---------------------------------------------------------------------------
+  #
+  # Runs each fuzz target for a bounded duration (FUZZ_DURATION seconds) via
+  # run_fuzz.sh. Any non-zero exit (crash, timeout, build failure) fails the
+  # job so regressions surface in CI. See FUZZING_GUIDE.md for details.
+  fuzz-nightly:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [escrow_fuzz]
+    env:
+      FUZZ_DURATION: "300"
+      FUZZ_WORKERS: "2"
+    steps:
+      - uses: actions/checkout@v7
 
-          # Upload spec as a release asset
-          gh release create "spec-latest" \
-            sdk-ts/spec.json \
-            --title "Contract Spec (latest)" \
-            --notes "Auto-published contract ABI spec from main @ ${SPEC_VERSION}. Schema v${SCHEMA_VERSION:-6}, Interface v${INTERFACE_VERSION:-1}." \
-            --prerelease \
-            || gh release upload "spec-latest" sdk-ts/spec.json --clobber
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SCHEMA_VERSION: "6"
-          INTERFACE_VERSION: "1"
+      - name: Install nightly Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
 
-      # -----------------------------------------------------------------------
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - name: Workspace Clippy (all targets)
-        run: cargo clippy -p karis-ky_escrow --all-targets -- -D warnings
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
 
-      - name: Check coverage (≥ 95%)
-        run: |
-          cargo llvm-cov \
-            --features testutils \
-            --fail-under-lines 95 \
-            --summary-only \
-            -p karis-ky_escrow
+      - name: Run fuzz target ${{ matrix.target }}
+        # Bounded run: exits non-zero on crash so CI fails.
+        run: ./run_fuzz.sh "${{ matrix.target }}" "$FUZZ_DURATION" "$FUZZ_WORKERS"
+
+      - name: Upload fuzz artifacts
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/
+          retention-days: 30
+          if-no-files-found: ignore

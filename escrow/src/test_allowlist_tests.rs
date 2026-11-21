@@ -421,6 +421,113 @@ fn test_batch_add_and_remove_from_allowlist() {
 }
 
 #[test]
+fn test_batch_add_emits_one_event_per_investor() {
+    use soroban_sdk::testutils::Events as _;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    init(&env, &client);
+    let invoice_id = client.get_escrow().invoice_id;
+    let contract_id = client.address.clone();
+
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+
+    let mut v: SorobanVec<Address> = SorobanVec::new(&env);
+    v.push_back(a.clone());
+    v.push_back(b.clone());
+    v.push_back(c.clone());
+
+    client.set_investors_allowlisted(&v, &true);
+
+    let events = env.events().all();
+    assert_eq!(
+        events,
+        std::vec![
+            InvestorAllowlistChanged {
+                name: symbol_short!("al_set"),
+                invoice_id: invoice_id.clone(),
+                investor: a.clone(),
+                allowed: 1,
+            }
+            .to_xdr(&env, &contract_id),
+            InvestorAllowlistChanged {
+                name: symbol_short!("al_set"),
+                invoice_id: invoice_id.clone(),
+                investor: b.clone(),
+                allowed: 1,
+            }
+            .to_xdr(&env, &contract_id),
+            InvestorAllowlistChanged {
+                name: symbol_short!("al_set"),
+                invoice_id,
+                investor: c,
+                allowed: 1,
+            }
+            .to_xdr(&env, &contract_id),
+        ]
+    );
+}
+
+#[test]
+fn test_batch_remove_emits_one_event_per_investor() {
+    use soroban_sdk::testutils::Events as _;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    init(&env, &client);
+    let invoice_id = client.get_escrow().invoice_id;
+    let contract_id = client.address.clone();
+
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+
+    let mut v: SorobanVec<Address> = SorobanVec::new(&env);
+    v.push_back(a.clone());
+    v.push_back(b.clone());
+    v.push_back(c.clone());
+
+    // Add investors first (clearing events)
+    client.set_investors_allowlisted(&v, &true);
+    env.events().all().clear();
+
+    // Now remove and verify events
+    client.set_investors_allowlisted(&v, &false);
+
+    let events = env.events().all();
+    assert_eq!(
+        events,
+        std::vec![
+            InvestorAllowlistChanged {
+                name: symbol_short!("al_set"),
+                invoice_id: invoice_id.clone(),
+                investor: a.clone(),
+                allowed: 0,
+            }
+            .to_xdr(&env, &contract_id),
+            InvestorAllowlistChanged {
+                name: symbol_short!("al_set"),
+                invoice_id: invoice_id.clone(),
+                investor: b.clone(),
+                allowed: 0,
+            }
+            .to_xdr(&env, &contract_id),
+            InvestorAllowlistChanged {
+                name: symbol_short!("al_set"),
+                invoice_id,
+                investor: c,
+                allowed: 0,
+            }
+            .to_xdr(&env, &contract_id),
+        ]
+    );
+}
+
+#[test]
 #[should_panic]
 fn test_batch_rejects_empty_vector() {
     let env = Env::default();

@@ -9,6 +9,7 @@
 # Usage:
 #   bash scripts/deploy.sh                 # uses default .env or env vars
 #   bash scripts/deploy.sh --env .env.test  # uses specified env file
+#   bash scripts/deploy.sh --dry-run        # print resolved plan and exit
 #
 # Expected environment variables (see .env.example below):
 #   STELLAR_NETWORK      — network name (default: local)
@@ -34,9 +35,11 @@ error()   { echo -e "${RED}[ERR]${NC}  $*"; exit 1; }
 # ── Parse arguments ─────────────────────────────────────────────────────────
 
 ENV_FILE=".env"
+DRY_RUN="false"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env) ENV_FILE="$2"; shift 2 ;;
+    --dry-run) DRY_RUN="true"; shift ;;
     *) error "Unknown argument: $1" ;;
   esac
 done
@@ -64,6 +67,35 @@ WASM_PATH="${WASM_PATH:-target/${WASM_TARGET}/release/karis_ky_escrow.wasm}"
 
 if [ -z "${SOURCE_SECRET}" ]; then
   error "SOURCE_SECRET is required. Set it in ${ENV_FILE} or as an env variable."
+fi
+
+# ── Dry-run: print resolved plan and exit ───────────────────────────────────
+
+if [ "${DRY_RUN}" = "true" ]; then
+  info "Dry-run mode: no deployment will be performed."
+  echo ""
+  echo "Resolved deployment plan:"
+  echo "  env file:           ${ENV_FILE}"
+  echo "  network:            ${STELLAR_NETWORK}"
+  echo "  rpc url:            ${SOROBAN_RPC_URL}"
+  echo "  network passphrase: ${NETWORK_PASSPHRASE}"
+  echo "  deployer address:   ${DEPLOYER_ADDRESS:-<unset>}"
+  echo "  source secret:      <redacted>"
+  echo "  wasm target:        ${WASM_TARGET}"
+  echo "  wasm path:          ${WASM_PATH}"
+  if [ -f "${WASM_PATH}" ]; then
+    WASM_SIZE=$(du -h "${WASM_PATH}" | cut -f1)
+    WASM_HASH=$(sha256sum "${WASM_PATH}" | cut -d' ' -f1)
+    echo "  wasm size:          ${WASM_SIZE}"
+    echo "  wasm sha256:        ${WASM_HASH}"
+  else
+    echo "  wasm size:          <not built>"
+    echo "  wasm sha256:        <not built>"
+  fi
+  echo "  init args:          (none)"
+  echo ""
+  success "Dry-run complete. Exiting without deploying."
+  exit 0
 fi
 
 # ── Build WASM if needed ────────────────────────────────────────────────────

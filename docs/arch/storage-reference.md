@@ -37,6 +37,73 @@ Detailed catalog of `DataKey` variants and contract types.
 | `YieldSlippageThreshold` | bool/option | Instance | — | Absent ⇒ `0` (no slippage check).... |
 
 
+## DataKey Storage-Placement Audit
+
+Audit of every `DataKey` variant defined in `escrow/src/lib.rs`, classifying its
+storage tier and estimating its approximate serialized size. Sizes are rough
+upper bounds for the Soroban XDR encoding of the value (excluding the key
+itself); `Address` values are ~40–56 bytes, `i128`/`u64` are 16/8 bytes, and
+`bool`/`u32` are 1/4 bytes. This audit is informational only — **no storage
+migration is performed in this issue**.
+
+| Key | Storage | Approx. size | Read frequency | Recommendation |
+|-----|---------|--------------|----------------|----------------|
+| `Escrow` | Instance | ~200–300 B | Every call | Keep in instance; single hot snapshot. |
+| `Version` | Instance | ~4 B | Rare | Keep in instance; tiny. |
+| `InvestorContribution` | Persistent | ~56 B | Per investor | Already persistent. |
+| `LegalHold` | Instance | ~1 B | Frequent | Keep in instance. |
+| `LegalHoldClearableAt` | Instance | ~8 B | Rare | Keep in instance; tiny. |
+| `LegalHoldClearDelay` | Instance | ~8 B | Rare | Keep in instance; tiny. |
+| `SmeCollateralPledge` | Instance | ~80 B | Rare | Keep in instance; small. |
+| `InvestorClaimed` | Persistent | ~56 B | Per investor | Already persistent. |
+| `FundingToken` | Instance | ~56 B | Frequent | Keep in instance. |
+| `Treasury` | Instance | ~56 B | Frequent | Keep in instance. |
+| `RegistryRef` | Instance | ~56 B | Rare | Keep in instance; small. |
+| `YieldTierTable` | Instance | ~100–400 B | Frequent | Keep in instance; bounded table. |
+| `FundingCloseSnapshot` | Instance | ~40 B | Frequent | Keep in instance. |
+| `InvestorEffectiveYield` | Persistent | ~56 B | Per investor | Already persistent. |
+| `InvestorClaimNotBefore` | Persistent | ~56 B | Per investor | Already persistent. |
+| `MinContributionFloor` | Instance | ~16 B | Frequent | Keep in instance. |
+| `MaxUniqueInvestorsCap` | Instance | ~4 B | Frequent | Keep in instance. |
+| `MaxPerInvestorCap` | Instance | ~16 B | Frequent | Keep in instance. |
+| `PendingAdmin` | Instance | ~56 B | Rare | Keep in instance; small. |
+| `UniqueFunderCount` | Instance | ~4 B | Frequent | Keep in instance. |
+| `PrimaryAttestationHash` | Instance | ~32 B | Frequent | Keep in instance; single digest. |
+| `AttestationAppendLog` | Instance | **Unbounded** (grows per append) | Rare | **Move to persistent.** Grows without bound; loading it on every call inflates instance cost. |
+| `AttestationLogEntry` | Instance | ~64–96 B per entry | Rare | **Move to persistent.** Only read when auditing the log. |
+| `AttestationTimestamp` | Instance | ~8 B per entry | Rare | **Move to persistent.** Append-only audit metadata. |
+| `AttestationTag` | Instance | ~32 B per entry | Rare | **Move to persistent.** Append-only audit metadata. |
+| `AttestationRevoked` | Instance | ~4 B per entry | Rare | **Move to persistent.** Revocation flags are audit-only. |
+| `VersionHistory` | Instance | **Unbounded** (grows per upgrade) | Rare | **Move to persistent.** History grows monotonically; not needed on hot paths. |
+| `InvestorFundingHistory` | Instance | **Unbounded** (grows per investor) | Rare | **Move to persistent.** Per-investor history scales with investor count. |
+| `AllowlistActive` | Instance | ~1 B | Frequent | Keep in instance. |
+| `InvestorAllowlisted` | Instance | ~56 B | Per investor | Consider persistent if allowlist is large; currently instance. |
+| `InvestorRefunded` | Instance | ~56 B | Per investor | Consider persistent if investor count is large; currently instance. |
+| `DistributedPrincipal` | Instance | ~16 B | Frequent | Keep in instance. |
+| `FundingDeadline` | Instance | ~8 B | Frequent | Keep in instance. |
+| `YieldSlippageThreshold` | Instance | ~16 B | Frequent | Keep in instance. |
+
+### Recommendations
+
+1. **Attestation append log family** (`AttestationAppendLog`,
+   `AttestationLogEntry`, `AttestationTimestamp`, `AttestationTag`,
+   `AttestationRevoked`): relocate to **persistent** storage. These keys are
+   append-only, grow without bound, and are only read during audit/verification
+   flows — never on the hot funding/settlement path.
+2. **`VersionHistory`**: relocate to **persistent** storage. It grows with each
+   upgrade and is only consulted for migration/diagnostics.
+3. **`InvestorFundingHistory`**: relocate to **persistent** storage. It scales
+   with the number of investors and is read only for per-investor reporting.
+4. **`InvestorAllowlisted` / `InvestorRefunded`**: monitor. If the investor set
+   grows large, these per-address instance entries should also move to
+   persistent storage; for small allowlists the current placement is fine.
+5. All remaining keys are small, bounded, and/or read on hot paths — keep them
+   in instance storage.
+
+> **Out of scope:** this issue only publishes the audit. Any actual migration
+> of the keys above must be handled in a follow-up issue with an explicit
+> `migrate()` path.
+
 ## Contract Types
 
 ### InvoiceEscrow (State Root)

@@ -1,11 +1,11 @@
 # Escrow Attestations: KYC/KYB Operational Flows
 
-This document describes how the three attestation entrypoints on the karis-ky escrow contract
+This document describes how the attestation entrypoints on the karis-ky escrow contract
 are used in KYC (Know Your Customer) and KYB (Know Your Business) compliance workflows.
 
 ## What this is — and what it is not
 
-Both entrypoints store a **32-byte digest** (e.g. SHA-256 of an IPFS CID or a document bundle
+The write entrypoints store a **32-byte digest** (e.g. SHA-256 of an IPFS CID or a document bundle
 hash) on-chain. This is a **chain anchor**: a tamper-evident pointer that lets any observer
 confirm that a specific document set existed at a specific ledger sequence.
 
@@ -22,14 +22,15 @@ independently and recompute the hash to confirm the anchor matches.
 
 ## Entrypoints
 
-### `bind_primary_attestation_hash(digest: BytesN<32>)`
+### `bind_primary_attestation_hash(digest: Bytes)`
 
 | Property | Value |
 |---|---|
 | Auth | `InvoiceEscrow::admin` |
 | Write policy | **Single-set** — panics if already bound |
+| Validation | `digest` must be exactly 32 bytes; otherwise returns `EscrowError::InvalidAttestationHashLength` (code 52) |
 | Storage key | `DataKey::PrimaryAttestationHash` |
-| Event | `PrimaryAttestationBound { invoice_id, digest }` |
+| Event | `AttestationBoundEvt` (new) and `PrimaryAttestationBound` (legacy) |
 
 Binds the canonical compliance document digest for this escrow instance. Intended for the
 initial KYC/KYB bundle that covers the SME and the invoice at origination.
@@ -57,6 +58,23 @@ an unchanged document at a new ledger timestamp via the event).
 The 33rd append panics with `"attestation append log capacity reached"`. If more than 32
 incremental anchors are needed, deploy a new escrow instance or extend the log off-chain using
 the event stream.
+
+### TypeScript SDK
+
+With an `EscrowClient` configured for the target contract, hash the canonical document bundle
+and append the resulting 32-byte digest. Node.js `Buffer` values are accepted because `Buffer`
+extends `Uint8Array`.
+
+```ts
+import { createHash } from "node:crypto";
+
+const digest: Uint8Array = createHash("sha256").update(canonicalBundle).digest();
+await client.appendAttestationDigest(digest);
+```
+
+The SDK checks the digest length before making an RPC call and throws the exported
+`ValidationError` if it is not exactly 32 bytes. RPC errors, including rate limits, are
+propagated unchanged.
 
 ### `revoke_attestation_digest(index: u32)`
 
@@ -97,10 +115,11 @@ Off-chain                              On-chain
    internal document store.
                                        4. Admin calls:
                                           bind_primary_attestation_hash(digest)
-                                          → PrimaryAttestationBound event emitted
+                                          → AttestationBoundEvt emitted with hash + ledger timestamp
+                                          → PrimaryAttestationBound legacy event emitted
                                           → DataKey::PrimaryAttestationHash set (immutable)
 
-5. Indexer reads PrimaryAttestationBound.
+5. Indexer reads AttestationBoundEvt.
    Off-chain verifier fetches bundle,
    recomputes SHA-256, confirms match.
 ```
@@ -229,6 +248,21 @@ Off-chain                              On-chain
 The original digest at index N remains in the append log for auditability. Indexers
 consume `AttestationDigestRevoked` events to compute the effective (non-revoked) chain.
 
+## TTL and Storage Expiry Risk
+
+The primary attestation hash and append log are stored in **instance storage**. Soroban
+instance storage has a ledger TTL; if it expires without being extended, its entries can be
+archived or evicted. The attestation log may then become unavailable along with other
+instance state, so an on-chain append log is not by itself a permanent compliance archive.
+
+For active escrows, monitor the instance TTL and call the permissionless `bump_ttl` entrypoint
+before the TTL expires, on a recurring schedule appropriate to the network's TTL limits. The
+instance TTL extension applies to all instance-storage keys, including the attestation log;
+the `allowlisted` argument may be empty when only the instance TTL needs extending. See
+[`escrow-gas-storage-notes.md`](escrow-gas-storage-notes.md) for the entrypoint's behavior.
+Retain the `AttestationDigestAppended` event stream and canonical off-chain documents in
+durable storage as an independent audit record.
+
 ## Security notes
 
 - **Admin key custody:** both entrypoints require `InvoiceEscrow::admin` auth. Production
@@ -258,7 +292,7 @@ consume `AttestationDigestRevoked` events to compute the effective (non-revoked)
   safely assume that once `AttestationDigestRevoked` is observed, it is final.
 
 - **Out-of-range rejection:** revoking a non-existent index panics with `"attestation index
-  out of range"`. The admin must read `get_attestation_append_log` to determine valid indices.
+   out of range"`. The admin can read `get_attestation_log` to determine valid indices.
 
 - **Token economics:** attestation entrypoints do not interact with token balances, funding
   state, or settlement flows. They are metadata-only. See
@@ -271,7 +305,7 @@ consume `AttestationDigestRevoked` events to compute the effective (non-revoked)
 
 ## Test coverage
 
-Attestation behavior is covered in [`escrow/src/test/attestations.rs`](../escrow/src/test/attestations.rs):
+Attestation behavior is covered in [`escrow/src/tests/attestations.rs`](../escrow/src/tests/attestations.rs):
 
 | Test | What it proves |
 |---|---|
@@ -284,6 +318,9 @@ Attestation behavior is covered in [`escrow/src/test/attestations.rs`](../escrow
 | `test_append_single_entry_stored` | Single append stored at index 0 |
 | `test_append_multiple_entries_ordered` | Insertion order preserved |
 | `test_append_exactly_max_entries_succeeds` | 32nd entry succeeds (boundary inclusive) |
+| `test_get_attestation_log_empty` | Dedicated getter returns an empty log before any append |
+| `test_get_attestation_log_partial` | Dedicated getter returns partial logs in insertion order |
+| `test_get_attestation_log_full` | Dedicated getter returns all 32 entries |
 | `test_append_beyond_max_panics` | 33rd entry panics |
 | `test_append_duplicate_digest_allowed` | Duplicate digests accepted |
 | `test_append_non_admin_panics` | Non-admin append is rejected |

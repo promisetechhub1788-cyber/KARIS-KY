@@ -1,0 +1,194 @@
+@startuml ShardingFundFlow
+!define INVESTOR_COLOR #E6E6FF
+!define PRIMARY_COLOR #FFE6E6
+!define SHARD_COLOR #E6F3FF
+!define DATA_COLOR #F0F0F0
+
+skinparam sequenceParticipantBackgroundColor<<investor>> INVESTOR_COLOR
+skinparam sequenceParticipantBackgroundColor<<primary>> PRIMARY_COLOR
+skinparam sequenceParticipantBackgroundColor<<shard>> SHARD_COLOR
+skinparam sequenceParticipantBackgroundColor<<data>> DATA_COLOR
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Arial
+
+participant "Investor (Alice)" <<investor>> as investor
+participant "Primary Escrow" <<primary>> as primary
+participant "Routing Logic" <<primary>> as routing
+participant "Shard 3" <<shard>> as shard
+participant "Persistent Storage" <<data>> as storage
+
+autonumber 1 "<b>Fund Operation"
+investor ->> primary: fund(alice_address, 50_000)
+activate primary
+  note over primary: require_auth(alice_address)
+  note over primary: validate(amount, caps, allowlist, legal_hold)
+  
+  primary ->> routing: compute_shard_id(alice_address, shard_count)
+  activate routing
+    note over routing: hash = blake3(alice_address)
+    note over routing: shard_id = hash % shard_count
+    routing ->> routing: shard_id = 3
+  deactivate routing
+  
+  primary ->> primary: ensure_shard_exists(3)
+  note over primary: Check registry for shard 3 address
+  note over primary: (Assume already exists)
+  
+  primary ->> shard: fund_investor(alice_address, 50_000)
+  activate shard
+    note over shard: Load escrow from persistent storage
+    shard ->> storage: get(InvestorContribution(alice_address))
+    activate storage
+      storage -->> shard: 0 (first time)
+    deactivate storage
+    
+    shard ->> storage: set(InvestorContribution(alice_address), 50_000)
+    note over storage: Persistent entry created for Alice
+    storage -->> shard: ✓
+    
+    shard -->> primary: ✓
+  deactivate shard
+  
+  primary ->> primary: funded_amount += 50_000
+  note over primary: Update aggregate funded amount
+  
+  primary ->> primary: Check if funded_amount >= target
+  note over primary: If yes, set FundingCloseSnapshot (once)
+  
+  primary ->> primary: emit EscrowFunded event
+  primary -->> investor: return updated_escrow
+deactivate primary
+
+@enduml
+
+@startuml ShardingSettlementFlow
+!define ESCROW_COLOR #FFE6E6
+!define SHARD_COLOR #E6F3FF
+!define DATA_COLOR #F0F0F0
+
+skinparam sequenceParticipantBackgroundColor<<escrow>> ESCROW_COLOR
+skinparam sequenceParticipantBackgroundColor<<shard>> SHARD_COLOR
+skinparam sequenceParticipantBackgroundColor<<data>> DATA_COLOR
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Arial
+
+participant "Settlement Trigger" <<escrow>> as caller
+participant "Primary Escrow" <<escrow>> as primary
+participant "Shard 0" <<shard>> as shard0
+participant "Shard 1" <<shard>> as shard1
+participant "Shard N" <<shard>> as shardn
+participant "Persistent Storage" <<data>> as storage
+
+autonumber 1 "<b>Settlement with Aggregation"
+caller ->> primary: settle()
+activate primary
+  note over primary: require_auth(sme)
+  note over primary: validate(maturity, status)
+  
+  primary ->> primary: aggregate_shard_state()
+  activate primary
+    note over primary: Get shard_count from registry
+    note over primary: Initialize: total = 0, count = 0
+  deactivate primary
+  
+  primary ->> primary: For each shard_id in [0, shard_count):
+  
+  primary ->> shard0: get_shard_aggregate_state()
+  activate shard0
+    note over shard0: Iterate all persistent investor entries
+    shard0 ->> storage: Scan [InvestorContribution(addr_*)]
+    activate storage
+      storage -->> shard0: {addr_0: 40k, addr_2: 55k, ...}
+    deactivate storage
+    
+    note over shard0: Calculate: total = 40k + 55k = 95k
+    note over shard0: Count: 2 investors
+    shard0 -->> primary: ShardAggregateState {95k, 2, shard_count}
+  deactivate shard0
+  
+  note over primary: Add to running total: total += 95k
+  
+  primary ->> shard1: get_shard_aggregate_state()
+  activate shard1
+    shard1 ->> storage: Scan [InvestorContribution(addr_*)]
+    activate storage
+      storage -->> shard1: {addr_1: 30k, addr_3: 20k, ...}
+    deactivate storage
+    note over shard1: total = 30k + 20k = 50k, count = 2
+    shard1 -->> primary: ShardAggregateState {50k, 2, shard_count}
+  deactivate shard1
+  
+  note over primary: Add to running total: total += 50k
+  
+  primary ->> shardn: get_shard_aggregate_state()
+  activate shardn
+    shardn ->> storage: Scan [InvestorContribution(addr_*)]
+    activate storage
+      storage -->> shardn: {addr_M: 25k}
+    deactivate storage
+    note over shardn: total = 25k, count = 1
+    shardn -->> primary: ShardAggregateState {25k, 1, shard_count}
+  deactivate shardn
+  
+  note over primary: Add to running total: total += 25k
+  
+  primary ->> primary: Verify Invariant
+  note over primary: Aggregated total (170k) == primary.funded_amount (170k)
+  note over primary: ✓ Invariant verified
+  
+  primary ->> primary: Settlement logic:
+  note over primary: • Transfer funds to SME
+  note over primary: • Record settlement timestamp
+  note over primary: • Set status = 2 (settled)
+  
+  primary -->> caller: return settled_escrow
+deactivate primary
+
+@enduml
+
+@startuml ShardingClaimFlow
+!define INVESTOR_COLOR #E6E6FF
+!define PRIMARY_COLOR #FFE6E6
+!define SHARD_COLOR #E6F3FF
+
+skinparam sequenceParticipantBackgroundColor<<investor>> INVESTOR_COLOR
+skinparam sequenceParticipantBackgroundColor<<primary>> PRIMARY_COLOR
+skinparam sequenceParticipantBackgroundColor<<shard>> SHARD_COLOR
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Arial
+
+participant "Investor (Bob)" <<investor>> as investor
+participant "Primary Escrow" <<primary>> as primary
+participant "Routing Logic" <<primary>> as routing
+participant "Shard 5" <<shard>> as shard
+
+autonumber 1 "<b>Claim Operation"
+investor ->> primary: claim_investor_payout(bob_address)
+activate primary
+  note over primary: require_auth(bob_address)
+  note over primary: validate(status == settled)
+  
+  primary ->> routing: compute_shard_id(bob_address, shard_count)
+  activate routing
+    note over routing: shard_id = hash(bob_address) % shard_count
+    routing ->> routing: shard_id = 5
+  deactivate routing
+  
+  primary ->> primary: Get shard 5 address from registry
+  
+  primary ->> shard: claim_investor_payout(bob_address)
+  activate shard
+    note over shard: Load FundingCloseSnapshot (for pro-rata)
+    note over shard: Read InvestorContribution(bob_address) = 30k
+    note over shard: Read InvestorClaimed(bob_address) = false
+    note over shard: Calculate: payout = (30k / total_principal) * settled_yield
+    note over shard: Set InvestorClaimed(bob_address) = true
+    shard -->> primary: payout_amount
+  deactivate shard
+  
+  primary ->> primary: Transfer payout_amount to bob_address
+  primary ->> primary: emit InvestorPayoutClaimed event
+  primary -->> investor: return payout_amount
+deactivate primary
+
+@enduml

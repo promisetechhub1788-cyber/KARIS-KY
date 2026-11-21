@@ -17,6 +17,32 @@ The snapshot is stored under `DataKey::FundingCloseSnapshot` and contains:
 - `closed_at_ledger_timestamp`: The ledger timestamp when the snapshot was captured.
 - `closed_at_ledger_sequence`: The ledger sequence number when the snapshot was captured.
 
+## Dual-Field Record Rationale (Timestamp + Sequence)
+
+Both `closed_at_ledger_timestamp` and `closed_at_ledger_sequence` are stored in the snapshot, even though only `closed_at_ledger_timestamp` is currently used in on-chain maturity comparisons. This redundancy serves several critical purposes:
+
+### 1. **Defensive Consistency Validation**
+
+The contract includes a debug assertion that verifies `closed_at_ledger_sequence == env.ledger().sequence()` at the moment the snapshot is written. This assertion catches scenarios where ledger state might be corrupted or inconsistent, preventing a silent record that mixes time from one ledger with sequence from another.
+
+### 2. **Off-Chain Timeline Reconstruction**
+
+Off-chain tools and indexers may reconstruct the funding timeline by comparing snapshots with the broader ledger history. Having both fields allows them to:
+- Cross-check the timestamp against the sequence number for the ledger in which the funding close occurred.
+- Detect if ledger time appears to be skewed relative to normal block progression (e.g., a large time jump with only one sequence increment could indicate clock drift or network anomalies).
+- Validate that the funding close ledger's time and sequence are internally consistent.
+
+### 3. **Preventing Off-Chain Calculation Errors**
+
+On networks where ledger time is artificially skewed (e.g., due to validator clock misalignment or network partition recovery), using only the timestamp to reconstruct funding intervals could produce incorrect duration calculations. With both fields, off-chain systems can apply additional heuristics:
+- Reject funding intervals that appear physically impossible (e.g., a 1-second close interval marked with a 1-hour timestamp delta).
+- Flag records for manual review if the sequence progression doesn't match the timestamp progression over a larger time window.
+- Use sequence as a fallback ordering mechanism if timestamps are found to be unreliable.
+
+### 4. **Future-Proof Auditing**
+
+If the contract logic ever needs to evolve to use `closed_at_ledger_sequence` for maturity gating or other conditions, the field is already present and populated consistently. This avoids the need for a migration and ensures historical snapshots are complete.
+
 ## Lifecycle and Immutability
 
 1. **Before close**: `get_funding_close_snapshot()` returns `None` while the escrow is still open and below target.
@@ -34,7 +60,8 @@ The `closed_at_ledger_timestamp` and `closed_at_ledger_sequence` fields are capt
 ## Security Considerations
 
 1. **Time and Sequence Bounds**: The snapshot captures `env.ledger().timestamp()` and `env.ledger().sequence()`. In Soroban, these are provided by the host environment and are reliable for on-chain time-based logic. Off-chain systems should treat these as the canonical boundaries for the "funded" state transition.
-2. **Write-Once Denominator**: `DataKey::FundingCloseSnapshot` is only set if it does not already exist. State transitions such as `settle` and `withdraw` do not recompute the denominator, which prevents later writes from changing investor weights.
-3. **State-Machine Misuse**: Funding after close is rejected by the `status == 0` funding guard before contribution or snapshot state can be mutated.
-4. **Overflow and Amount Guards**: Funding uses positive amount checks and checked arithmetic before writing `funded_amount` or contribution records.
-5. **Token Economics and Assumptions**: As detailed in `escrow/src/external_calls.rs`, this contract strictly assumes standard SEP-41 token mechanics. Malicious, rebasing, or fee-on-transfer (FOT) tokens are **explicitly out of scope** and will trigger safe-failure panics at the balance-check boundaries. This ensures that the `total_principal` captured in the snapshot matches standard token accounting assumptions, preserving the integrity of off-chain payout calculations.
+2. **Sequence Consistency Assertion**: At snapshot write time, the contract includes a debug assertion `debug_assert_eq!(closed_at_ledger_sequence, env.ledger().sequence())` to verify that both fields are captured from the same ledger. This prevents silent inconsistencies where the snapshot might record mismatched time and sequence values, which could lead to off-chain calculation errors.
+3. **Write-Once Denominator**: `DataKey::FundingCloseSnapshot` is only set if it does not already exist. State transitions such as `settle` and `withdraw` do not recompute the denominator, which prevents later writes from changing investor weights.
+4. **State-Machine Misuse**: Funding after close is rejected by the `status == 0` funding guard before contribution or snapshot state can be mutated.
+5. **Overflow and Amount Guards**: Funding uses positive amount checks and checked arithmetic before writing `funded_amount` or contribution records.
+6. **Token Economics and Assumptions**: As detailed in `escrow/src/external_calls.rs`, this contract strictly assumes standard SEP-41 token mechanics. Malicious, rebasing, or fee-on-transfer (FOT) tokens are **explicitly out of scope** and will trigger safe-failure panics at the balance-check boundaries. This ensures that the `total_principal` captured in the snapshot matches standard token accounting assumptions, preserving the integrity of off-chain payout calculations.

@@ -159,6 +159,8 @@ Events to monitor (see docs/EVENT_SCHEMA.md and escrow-events.md):
 - Filter events by contract address.
 - Send alerts to Slack, PagerDuty, or your on-call system.
 - Retain logs for at least 90 days.
+- For `EscrowHealthWarning` ingestion and backend webhook configuration, see
+  [Escrow Health Warning Alerts](escrow-health-alerting.md).
 
 ### 3.2 Storage audit (periodic)
 
@@ -367,9 +369,59 @@ Before mainnet deployment, confirm:
 
 ---
 
+## 7. Admin-Power Threat Model
+
+> **Single source of truth.** This table mirrors the threat-model review published for issue #240. Any change to admin powers must be reflected here and in the corresponding follow-up issues.
+
+The contract's `admin` (see §1.1) can invoke the following privileged entrypoints. Each row states the worst-case impact of a compromised admin key, the mitigation currently enforced on-chain, and the recommended mitigation where a gap remains.
+
+| Admin power | Worst-case impact | Current mitigation | Recommended mitigation |
+|---|---|---|---|
+| `update_target` | Redirect funding goals; mislead investors about the raise size | `require_auth()` on admin only | Multisig admin (§1.1); emit + monitor `TargetUpdated` events |
+| `update_maturity` (extension) | Extend maturity indefinitely, delaying investor repayment | `require_auth()` on admin only | **Propose/confirm or delay mechanism** — tracked in follow-up [#241](https://github.com/karis-ky/escrow/issues/241); see §7.1 |
+| `update_maturity` (shortening) | Accelerate settlement earlier than investors expect | `require_auth()` on admin only | Out of scope for #241; keep admin-only but monitor events |
+| `lower_cap` | Reduce the funding cap below already-committed amounts | `require_auth()` on admin only | Multisig admin; emit + monitor `CapLowered` events |
+| `set_legal_hold` | Freeze all fund movement (`settle`, `withdraw`, `claim_investor_payout`, `fund`) | `require_auth()` on admin only; reversible by admin | Multisig admin; alerting on `LegalHoldActivated` (§3.1) |
+| `set_dispute_pause` | Halt operations pending dispute resolution | `require_auth()` on admin only | Multisig admin; alerting on `DisputePausedEvt` (§3.1) |
+| `set_rate_limit` | Throttle or block investor actions | `require_auth()` on admin only | Multisig admin; document limits in operator runbook |
+| `upgrade` / `update_current_contract_wasm` | Swap contract code in a single transaction; total loss of funds | `require_auth()` on admin only | **Two-step `propose_upgrade` / `execute_upgrade` with minimum delay** — tracked in follow-up [#242](https://github.com/karis-ky/escrow/issues/242); see §7.2 |
+| `archive` | Move instance to archived state; halt operations | `require_auth()` on admin only | Multisig admin; require legal-hold clear before archive |
+| `rotate_beneficiary` | Redirect payouts to an attacker-controlled address | `require_auth()` on admin only | Multisig admin; emit + monitor beneficiary-rotation events |
+| `propose_admin` / `accept_admin` | Full transfer of admin authority to attacker | Two-step propose/accept, but **no timelock** (§4.3) | Multisig or DAO contract as `admin`; consider timelock on `accept_admin` |
+
+### 7.1 `update_maturity` extension guard (follow-up #241)
+
+Maturity **extensions** are the highest-impact non-upgrade power because they indefinitely delay investor repayment. The recommended design (tracked in [#241](https://github.com/karis-ky/escrow/issues/241)) is a propose/confirm or delay mechanism:
+
+- `propose_maturity_extension(new_maturity)` records the intent and starts a delay window.
+- `confirm_maturity_extension()` (or a guardian confirmation) executes the extension after the delay elapses.
+- Maturity **shortening** rules are unchanged and remain admin-only.
+
+Until #241 lands, operators must treat any `update_maturity` extension as a high-severity event and require governance multisig sign-off plus off-chain notification to affected investors.
+
+### 7.2 `upgrade` propose/execute flow (follow-up #242)
+
+`upgrade(new_wasm_hash)` currently takes effect immediately on admin authorization, so a single compromised key can swap the contract code in one transaction. The recommended design (tracked in [#242](https://github.com/karis-ky/escrow/issues/242)) is:
+
+- `propose_upgrade(new_wasm_hash)` records the pending hash and emits a `UpgradeProposed` event.
+- `execute_upgrade()` applies the pending hash after a minimum delay and emits an `UpgradeExecuted` event.
+- The legacy `upgrade` entrypoint is gated behind the new flow until the interface version is bumped.
+
+Operators should monitor for `UpgradeProposed` events and treat any proposal without a matching governance change ticket as a potential key compromise (§4.3).
+
+### 7.3 Follow-up issues
+
+The following follow-ups track the unmitigated high-impact powers identified above:
+
+- [#240](https://github.com/karis-ky/escrow/issues/240) — Threat model review of all admin-only entrypoints (this section).
+- [#241](https://github.com/karis-ky/escrow/issues/241) — Require a timelock or guardian confirmation for `update_maturity` extensions.
+- [#242](https://github.com/karis-ky/escrow/issues/242) — Guard `upgrade` with a two-step propose/execute and delay.
+
+---
+
 ## References
 
-- [`docs/OPERATOR_RUNBOOK.md`](OPERATOR_RUNBOOK.md) — Redeploy vs. upgrade decisions and WASM update ceremony.
+- [`docs/OPERATOR_RUNBOOK.md`](OPERATOR_RUNBOOK.md) — Redeploy vs. upgrade decisions, WASM update ceremony, and **legal hold + dispute pause interaction matrix** (§8).
 - [`docs/escrow-security-checklist.md`](escrow-security-checklist.md) — Auth matrix, invariants, and threat model.
 - [`docs/escrow-events.md`](escrow-events.md) — Event schema and monitoring targets.
 - [`docs/escrow-legal-hold.md`](escrow-legal-hold.md) — Legal hold mechanism and governance implications.

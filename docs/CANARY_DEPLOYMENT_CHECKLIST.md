@@ -24,6 +24,10 @@ Fillable checklist for canary deployments. Print and use for each staged rollout
   - [ ] `get_escrow` reads successfully
   - [ ] Investor funding works (if applicable)
   - [ ] Settlement/claims work (if applicable)
+- [ ] Automated smoke test passes: `scripts/canary-smoke-test.sh <CONTRACT_ID> testnet`
+  - [ ] `get_version` returns a non-empty value
+  - [ ] `get_escrow_health` reports healthy
+  - [ ] `get_escrow` reads escrow state without error
 - [ ] No errors in testnet logs
 - [ ] Performance within baseline ±15%
 
@@ -97,6 +101,11 @@ Fillable checklist for canary deployments. Print and use for each staged rollout
 - [ ] Escrow status unchanged (before ≈ after)
 - [ ] Funded amount unchanged (state integrity)
 - [ ] Legal hold remains active (as set pre-deployment)
+- [ ] Automated smoke test passes on each canary instance:
+      `scripts/canary-smoke-test.sh <CONTRACT_ID> mainnet`
+  - [ ] `get_version` returns a non-empty value
+  - [ ] `get_escrow_health` reports healthy
+  - [ ] `get_escrow` reads escrow state without error
 
 ### Legal hold clearance
 - [ ] Legal hold cleared on all canary instances
@@ -238,126 +247,37 @@ Fillable checklist for canary deployments. Print and use for each staged rollout
 - [ ] Admin (multisig) notified of governance approval
 - [ ] Admin gathered for signing session
 - [ ] WASM hash verified (same as canary): `_____________`
-- [ ] Production instance list prepared (is_canary == false):
-  - [ ] __________, __________, __________, ...
-  - [ ] Total production instances: _____
-
-### Production deployment execution
-- [ ] Legal hold activated on all production instances
-- [ ] Upgrade invocations issued to all instances (can be batched)
-- [ ] All upgrades successful (no timeouts/errors)
-- [ ] Timestamp completed: ______________
-
-### Production verification
-- [ ] Version query on 5+ random production instances: all correct
-- [ ] get_escrow on 5+ random instances: no errors
-- [ ] State integrity verified (spot-check funded_amount)
-- [ ] Legal hold cleared on all production instances
-
-### Production monitoring begins
-- [ ] 1h, 24h, 72h checkpoints scheduled
-- [ ] Monitoring dashboard updated
-- [ ] Ops team notified of full rollout
+- [ ] Production instance list confirmed
+- [ ] Production deployment executed
+- [ ] Post-deployment smoke test passes:
+      `scripts/canary-smoke-test.sh <CONTRACT_ID> mainnet`
 
 ---
 
-## Phase 8: Post-Upgrade Review
+## Automated Smoke Test
 
-### Meeting scheduled
-- [ ] Retrospective meeting scheduled: _____________________
-- [ ] Attendees: Ops, Security, Governance, CanaryOperator
+The canary smoke test is automated via `scripts/canary-smoke-test.sh`. It
+accepts a contract ID and performs read-only checks against three endpoints:
 
-### Review items
-- [ ] What went well: __________________________________________
-- [ ] What could improve: ______________________________________
-- [ ] Any incidents or surprises: _______________________________
-- [ ] Canary value assessment: __________________________________
-- [ ] Changes to procedures (if any): ___________________________
+| Endpoint | Assertion |
+|----------|-----------|
+| `get_version` | Returns a non-empty version/schema value |
+| `get_escrow_health` | Reports a healthy status |
+| `get_escrow` | Reads escrow state without error |
 
-### Documentation updates
-- [ ] Runbook updated with lessons learned
-- [ ] Monitoring dashboard procedures improved: YES / NO
-- [ ] RBAC or access control refinements needed: YES / NO
-  - If YES, action items: ___________________________________
-
-### Sign-off
-
-```
-Canary deployment ID: ________________________________________
-CanaryOperator: ________________________  Date: ______________
-Admin (multisig): ________________________  Date: ______________
-Governance: ________________________  Date: ______________
-
-Canary result:  ✓ SUCCESS  ☐ PARTIAL  ☐ FAILED
-Production deployment:  ✓ COMPLETE  ☐ ONGOING  ☐ ROLLED BACK
-```
-
----
-
-## Emergency Rollback Checklist
-
-**Use if canary deployment has critical issues**
-
-### Initial response
-- [ ] Issue identified and documented
-- [ ] CanaryOperator notified (escalation: IMMEDIATE)
-- [ ] Governance notified (escalation: IMMEDIATE)
-- [ ] Incident channel opened
-
-### Rollback decision
-- [ ] Root cause identified (or decision to rollback first, investigate later)
-- [ ] Rollback authorized by CanaryOperator (canary only) or Admin (production)
-- [ ] Old WASM hash confirmed: `_______________________________`
-
-### Rollback execution
-- [ ] Legal hold activated on affected instances
-- [ ] Rollback invocation issued (upgrade to old WASM hash)
-- [ ] All instances successfully reverted
-- [ ] Timestamp completed: ______________
-
-### Post-rollback verification
-- [ ] All instances respond to RPC
-- [ ] Version query shows old schema
-- [ ] get_escrow returns state without errors
-- [ ] Investor data intact (spot-check funded_amount)
-
-### Investigation
-- [ ] Root cause documented
-- [ ] Code fix prepared (if applicable)
-- [ ] Re-test on testnet: YES / NO / PENDING
-- [ ] Timeline for re-canary: _____________________
-
----
-
-## Escalation contacts
-
-| Role | Contact | Response time |
-|------|---------|----------------|
-| CanaryOperator | _________________ | 30 min |
-| Ops lead | _________________ | 15 min |
-| Admin (multisig) | _________________ | 1 hour |
-| Security team | _________________ | 30 min |
-| Governance | _________________ | 2 hours |
-
----
-
-## Appendix: Metrics queries
+Usage:
 
 ```bash
-# Error rate over 72h
-stellar-indexer query errors \
-  --contract CANARY_INSTANCE \
-  --start "2024-07-27T12:00:00Z" \
-  --end "2024-07-30T12:00:00Z"
-
-# Settlement success rate
-stellar-indexer query transactions \
-  --contract CANARY_INSTANCE \
-  --type settlement \
-  --success_only
-
-# Gas usage (typical per call)
-stellar-indexer query gas_usage \
-  --contract CANARY_INSTANCE \
-  --function upgrade
+scripts/canary-smoke-test.sh <CONTRACT_ID> [NETWORK] [SOURCE]
 ```
+
+- `CONTRACT_ID` — Stellar contract ID of the canary deployment (required)
+- `NETWORK` — Stellar network to target (default: `testnet`)
+- `SOURCE` — Identity/source account for the read-only calls (default: `canary-smoke`)
+
+The script is idempotent: it only performs read-only queries and never mutates
+contract state, so it is safe to run multiple times. It exits `0` when all
+checks pass, `1` when a check fails, and `2` on usage/configuration errors.
+
+In CI, the smoke test runs against a testnet canary contract. PR builds that do
+not have a canary deployed can skip it by setting `SKIP_CANARY_SMOKE=1`.

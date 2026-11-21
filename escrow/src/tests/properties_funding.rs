@@ -1080,16 +1080,20 @@ fn fuzz_payout_conservation_100_cases() {
 
         let investors: Vec<Address> = (0..n).map(|_| Address::generate(&env)).collect();
         let amounts: Vec<i128> = (0..n).map(|_| rng.range_i128(1, 1_000_000)).collect();
-        let pairs: Vec<(Address, i128)> = investors.iter().cloned()
+        let pairs: Vec<(Address, i128)> = investors
+            .iter()
+            .cloned()
             .zip(amounts.iter().cloned())
             .collect();
 
         let client = deploy_funded_settled(&env, "FUZZ0100", yield_bps, &pairs);
 
-        let snap = client.get_funding_close_snapshot()
+        let snap = client
+            .get_funding_close_snapshot()
             .unwrap_or_else(|| panic!("case {case_idx}: snapshot missing"));
         let settle_pool = expected_settle_pool(snap.total_principal, yield_bps);
-        let payout_sum: i128 = investors.iter()
+        let payout_sum: i128 = investors
+            .iter()
             .map(|inv| client.compute_investor_payout(inv))
             .sum();
 
@@ -1122,8 +1126,8 @@ fn fuzz_funded_amount_equals_contribution_sum_100_cases() {
         let n = rng.range_usize(1, 8);
         let target = rng.range_i128(n as i128 * 100, 2_000_000);
 
-        let admin  = Address::generate(&env);
-        let sme    = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let sme = Address::generate(&env);
         let client = deploy(&env);
         let (token, treasury) = free_addresses(&env);
 
@@ -1137,7 +1141,15 @@ fn fuzz_funded_amount_equals_contribution_sum_100_cases() {
             &token,
             &None,
             &treasury,
-            &None, &None, &None, &None, &None, &None, &None, &None, &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
         );
 
         let max_each = (target / n as i128).max(1);
@@ -1159,7 +1171,8 @@ fn fuzz_funded_amount_equals_contribution_sum_100_cases() {
             "case {case_idx}: funded_amount ({funded}) != sum ({running_sum}), seed={case_seed}"
         );
 
-        let contribution_sum: i128 = investors.iter()
+        let contribution_sum: i128 = investors
+            .iter()
             .map(|inv| client.get_contribution(inv))
             .sum();
         assert_eq!(
@@ -1182,7 +1195,10 @@ fn edge_single_investor_minimum_contribution_zero_yield() {
     let client = deploy_funded_settled(&env, "EDGE0001", 0i64, &[(investor.clone(), 1i128)]);
 
     let payout = client.compute_investor_payout(&investor);
-    assert_eq!(payout, 1, "minimum single investor at zero yield: payout must be 1");
+    assert_eq!(
+        payout, 1,
+        "minimum single investor at zero yield: payout must be 1"
+    );
     assert_eq!(client.get_contribution(&investor), 1);
     assert_eq!(client.get_unique_funder_count(), 1);
 }
@@ -1195,12 +1211,18 @@ fn edge_single_investor_max_yield() {
     let investor = Address::generate(&env);
     let contribution: i128 = 10_000;
     let client = deploy_funded_settled(
-        &env, "EDGE0002", 10_000i64, &[(investor.clone(), contribution)],
+        &env,
+        "EDGE0002",
+        10_000i64,
+        &[(investor.clone(), contribution)],
     );
 
     let payout = client.compute_investor_payout(&investor);
     // settle_pool = 10_000 + (10_000 * 10_000 / 10_000) = 20_000
-    assert_eq!(payout, 20_000, "max yield single investor: payout must be 2x principal");
+    assert_eq!(
+        payout, 20_000,
+        "max yield single investor: payout must be 2x principal"
+    );
 }
 
 /// Two investors with equal contributions: payouts are equal.
@@ -1235,12 +1257,18 @@ fn edge_non_participant_zero_payout_and_contribution() {
     env.mock_all_auths();
     let investor = Address::generate(&env);
     let stranger = Address::generate(&env);
-    let client = deploy_funded_settled(
-        &env, "EDGE0004", 500i64, &[(investor, 50_000i128)],
-    );
+    let client = deploy_funded_settled(&env, "EDGE0004", 500i64, &[(investor, 50_000i128)]);
 
-    assert_eq!(client.get_contribution(&stranger), 0, "stranger contribution must be 0");
-    assert_eq!(client.compute_investor_payout(&stranger), 0, "stranger payout must be 0");
+    assert_eq!(
+        client.get_contribution(&stranger),
+        0,
+        "stranger contribution must be 0"
+    );
+    assert_eq!(
+        client.compute_investor_payout(&stranger),
+        0,
+        "stranger payout must be 0"
+    );
 }
 
 /// Prime-denominator total: residue is bounded by investor count.
@@ -1260,17 +1288,18 @@ fn edge_prime_denominator_residue_bounded() {
 
     let snap = client.get_funding_close_snapshot().unwrap();
     let settle_pool = expected_settle_pool(snap.total_principal, yield_bps);
-    let payout_sum: i128 = investors.iter()
+    let payout_sum: i128 = investors
+        .iter()
         .map(|inv| client.compute_investor_payout(inv))
         .sum();
 
-    assert!(payout_sum <= settle_pool, "prime denom: sum must not exceed settle_pool");
+    assert!(
+        payout_sum <= settle_pool,
+        "prime denom: sum must not exceed settle_pool"
+    );
     let residue = settle_pool - payout_sum;
     assert!(residue >= 0, "residue must be non-negative");
-    assert!(
-        residue < 3,
-        "residue ({residue}) must be < n_investors (3)"
-    );
+    assert!(residue < 3, "residue ({residue}) must be < n_investors (3)");
 }
 
 /// Zero contributions list: escrow initialized with target but no fund() calls.
@@ -1280,7 +1309,7 @@ fn edge_no_contributions_zero_state() {
     let env = Env::default();
     env.mock_all_auths();
     let admin = Address::generate(&env);
-    let sme   = Address::generate(&env);
+    let sme = Address::generate(&env);
     let client = deploy(&env);
     let (token, treasury) = free_addresses(&env);
 
@@ -1294,13 +1323,36 @@ fn edge_no_contributions_zero_state() {
         &token,
         &None,
         &treasury,
-        &None, &None, &None, &None, &None, &None, &None, &None, &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
     );
 
-    assert_eq!(client.get_escrow().status, 0, "no contributions: status must be 0");
-    assert_eq!(client.get_escrow().funded_amount, 0, "no contributions: funded_amount must be 0");
-    assert!(client.get_funding_close_snapshot().is_none(), "no snapshot before any funding");
-    assert_eq!(client.get_unique_funder_count(), 0, "no unique funders before any funding");
+    assert_eq!(
+        client.get_escrow().status,
+        0,
+        "no contributions: status must be 0"
+    );
+    assert_eq!(
+        client.get_escrow().funded_amount,
+        0,
+        "no contributions: funded_amount must be 0"
+    );
+    assert!(
+        client.get_funding_close_snapshot().is_none(),
+        "no snapshot before any funding"
+    );
+    assert_eq!(
+        client.get_unique_funder_count(),
+        0,
+        "no unique funders before any funding"
+    );
 }
 
 /// Investor funds exactly the target: status flips to 1 on that exact call.
@@ -1308,10 +1360,10 @@ fn edge_no_contributions_zero_state() {
 fn edge_exact_target_funding() {
     let env = Env::default();
     env.mock_all_auths();
-    let admin    = Address::generate(&env);
-    let sme      = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
     let investor = Address::generate(&env);
-    let client   = deploy(&env);
+    let client = deploy(&env);
     let (token, treasury) = free_addresses(&env);
     let target: i128 = 100_000;
 
@@ -1325,14 +1377,23 @@ fn edge_exact_target_funding() {
         &token,
         &None,
         &treasury,
-        &None, &None, &None, &None, &None, &None, &None, &None, &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
     );
 
     let after = client.fund(&investor, &target);
     assert_eq!(after.status, 1, "exact target funding must set status to 1");
     assert_eq!(after.funded_amount, target);
 
-    let snap = client.get_funding_close_snapshot()
+    let snap = client
+        .get_funding_close_snapshot()
         .expect("snapshot must exist on exact-target funding");
     assert_eq!(snap.total_principal, target);
     assert_eq!(snap.funding_target, target);
@@ -1344,7 +1405,7 @@ fn edge_two_investors_second_crosses_target() {
     let env = Env::default();
     env.mock_all_auths();
     let admin = Address::generate(&env);
-    let sme   = Address::generate(&env);
+    let sme = Address::generate(&env);
     let inv_a = Address::generate(&env);
     let inv_b = Address::generate(&env);
     let client = deploy(&env);
@@ -1361,15 +1422,29 @@ fn edge_two_investors_second_crosses_target() {
         &token,
         &None,
         &treasury,
-        &None, &None, &None, &None, &None, &None, &None, &None, &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
     );
 
     let after_a = client.fund(&inv_a, &60_000i128);
     assert_eq!(after_a.status, 0, "first investor partial: status still 0");
-    assert!(client.get_funding_close_snapshot().is_none(), "no snapshot before threshold");
+    assert!(
+        client.get_funding_close_snapshot().is_none(),
+        "no snapshot before threshold"
+    );
 
     let after_b = client.fund(&inv_b, &40_000i128);
-    assert_eq!(after_b.status, 1, "second investor crosses target: status becomes 1");
+    assert_eq!(
+        after_b.status, 1,
+        "second investor crosses target: status becomes 1"
+    );
 
     let snap = client.get_funding_close_snapshot().unwrap();
     assert_eq!(snap.total_principal, 100_000i128);
@@ -1380,7 +1455,10 @@ fn edge_two_investors_second_crosses_target() {
     let pb = client.compute_investor_payout(&inv_b);
     let settle_pool = expected_settle_pool(100_000, 500);
     assert!(pa + pb <= settle_pool);
-    assert!(pa > 0 && pb > 0, "both investors must have positive payouts");
+    assert!(
+        pa > 0 && pb > 0,
+        "both investors must have positive payouts"
+    );
 }
 
 /// Large number of investors (10) with small contributions: conservation holds.
@@ -1389,7 +1467,9 @@ fn edge_ten_investors_small_contributions() {
     let env = Env::default();
     env.mock_all_auths();
     let investors: Vec<Address> = (0..10).map(|_| Address::generate(&env)).collect();
-    let pairs: Vec<(Address, i128)> = investors.iter().cloned()
+    let pairs: Vec<(Address, i128)> = investors
+        .iter()
+        .cloned()
         .map(|inv| (inv, 1_000i128))
         .collect();
     let yield_bps: i64 = 1_500;
@@ -1398,12 +1478,20 @@ fn edge_ten_investors_small_contributions() {
 
     let snap = client.get_funding_close_snapshot().unwrap();
     let settle_pool = expected_settle_pool(snap.total_principal, yield_bps);
-    let payout_sum: i128 = investors.iter()
+    let payout_sum: i128 = investors
+        .iter()
         .map(|inv| client.compute_investor_payout(inv))
         .sum();
 
-    assert!(payout_sum <= settle_pool, "10 investors: sum must not exceed settle_pool");
-    assert_eq!(client.get_unique_funder_count(), 10, "must have 10 unique funders");
+    assert!(
+        payout_sum <= settle_pool,
+        "10 investors: sum must not exceed settle_pool"
+    );
+    assert_eq!(
+        client.get_unique_funder_count(),
+        10,
+        "must have 10 unique funders"
+    );
 }
 
 /// is_investor_claimed() transitions false → true after settle + mark.
@@ -1413,13 +1501,17 @@ fn edge_investor_claim_flag_transitions() {
     let env = Env::default();
     env.mock_all_auths();
     let investor = Address::generate(&env);
-    let client = deploy_funded_settled(
-        &env, "EDGE0010", 800i64, &[(investor.clone(), 50_000i128)],
-    );
+    let client = deploy_funded_settled(&env, "EDGE0010", 800i64, &[(investor.clone(), 50_000i128)]);
 
-    assert!(!client.is_investor_claimed(&investor), "must not be claimed before claim call");
+    assert!(
+        !client.is_investor_claimed(&investor),
+        "must not be claimed before claim call"
+    );
     client.claim_investor_payout(&investor);
-    assert!(client.is_investor_claimed(&investor), "must be claimed after claim call");
+    assert!(
+        client.is_investor_claimed(&investor),
+        "must be claimed after claim call"
+    );
 }
 
 /// Contribution for an investor who made multiple fund() calls accumulates correctly.
@@ -1427,10 +1519,10 @@ fn edge_investor_claim_flag_transitions() {
 fn edge_multi_call_same_investor_accumulates() {
     let env = Env::default();
     env.mock_all_auths();
-    let admin    = Address::generate(&env);
-    let sme      = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
     let investor = Address::generate(&env);
-    let client   = deploy(&env);
+    let client = deploy(&env);
     let (token, treasury) = free_addresses(&env);
 
     client.init(
@@ -1443,7 +1535,15 @@ fn edge_multi_call_same_investor_accumulates() {
         &token,
         &None,
         &treasury,
-        &None, &None, &None, &None, &None, &None, &None, &None, &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
     );
 
     client.fund(&investor, &50_000i128);
@@ -1456,5 +1556,9 @@ fn edge_multi_call_same_investor_accumulates() {
     assert_eq!(client.get_contribution(&investor), 200_000);
 
     assert_eq!(client.get_escrow().funded_amount, 200_000);
-    assert_eq!(client.get_unique_funder_count(), 1, "same investor: unique count must be 1");
+    assert_eq!(
+        client.get_unique_funder_count(),
+        1,
+        "same investor: unique count must be 1"
+    );
 }

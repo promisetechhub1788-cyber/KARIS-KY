@@ -160,6 +160,7 @@ This table must match the `migrate` rustdoc in `escrow/src/lib.rs`.
 | Condition | Typed error |
 |-----------|-------------|
 | `stored_version != from_version` | `EscrowError::MigrationVersionMismatch` |
+| Migration already applied; replay detected | `EscrowError::MigrationAlreadyApplied` |
 | `from_version >= SCHEMA_VERSION` | `EscrowError::AlreadyCurrentSchemaVersion` |
 | Any `from_version < SCHEMA_VERSION` without an implemented migration branch | `EscrowError::NoMigrationPath` |
 
@@ -167,11 +168,79 @@ Because Soroban aborts the transaction on contract panic, these errors perform
 no storage writes in the current release. Operators must not call `migrate()` as
 a bookkeeping step after additive upgrades.
 
+### Migration idempotency and replay protection
+
+**Starting from schema version 7**, the `migrate()` entrypoint enforces idempotency via a
+stored nonce [`DataKey::MigrationExecutionLog`]:
+
+- After a successful migration, a nonce is written to prevent re-application of the same
+  version transition to the same instance.
+- If you call `migrate(from_version)` twice, the second call fails with 
+  [`EscrowError::MigrationAlreadyApplied`] (code 93).
+- This is a safety measure to prevent double-application of state transformations
+  (e.g., yield recalculations, per-investor claim locks, collateral audits).
+
+**Operator action:** Do not retry a `migrate()` call if you receive error code 93. Instead:
+
+1. Verify the on-chain version with `get_version()`.
+2. If it matches your target, the migration succeeded.
+3. If it does not, investigate the first call's failure reason and contact governance.
+
+**Developer action:** When implementing a migration path (v6 → v7, etc.):
+
+```rust
+if from_version == 6 && SCHEMA_VERSION == 7 {
+    // 1. Perform state transformation
+    // ... your migration logic ...
+    
+    // 2. Write new version (must be last state write)
+    env.storage().instance().set(&DataKey::Version, &7u32);
+    
+    // 3. Write idempotency nonce in same transaction (prevents replay)
+    env.storage().instance().set(
+        &DataKey::MigrationExecutionLog(6, 7),
+        &env.ledger().sequence(),
+    );
+    
+    // 4. Optional: Record completion timestamp for audit trails
+    env.storage().instance().set(
+        &DataKey::MigrationCompletedAt(6, 7),
+        &env.ledger().timestamp(),
+    );
+    
+    // 5. Return new version
+    return 7;
+}
+```
+
 ---
 
 ## 3. Pre-flight checklist (testnet → mainnet)
 
 Complete all items before promoting to Mainnet.
+
+### Read-only RPC pre-flight
+
+Use `scripts/pre-flight-checklist.sh` for the read-only contract checks. The
+independent checks run concurrently and their results are printed in a stable
+order after every started request has completed. A failed, timed-out, malformed,
+or non-successful RPC response makes the script exit non-zero.
+
+Prerequisites: Bash, `stellar`, `curl` as required by the installed CLI,
+`jq` for downstream inspection, and the GNU `timeout` utility. Configure the
+Stellar CLI network first, then run:
+
+```bash
+export STELLAR_NETWORK=testnet
+export CONTRACT_ID=C...
+bash scripts/pre-flight-checklist.sh
+```
+
+The default network is `local`. Set `CHECK_TIMEOUT_SECS` to override the
+30-second timeout per query. The script uses the configured named network and
+does not print or accept signing secrets; these checks are read-only. Keep
+dependent checks outside the parallel batch if future checks require output
+from an earlier query.
 
 ### Build & verify
 
@@ -215,6 +284,9 @@ ls target/wasm32v1-none/release/karis-ky_escrow.wasm
 - [ ] Legal hold (`set_legal_hold`) procedure is documented in ops playbook.
 - [ ] Attestation digests and their canonical off-chain encoding are
       documented.
+- [ ] Instance TTL is monitored for every active escrow, and `bump_ttl` is
+  scheduled before expiry to preserve instance state, including attestation
+  records. See [TTL semantics and operational `bump_ttl`](escrow-gas-storage-notes.md).
 - [ ] CI passes: format, clippy, tests, coverage ≥ 95%.
 
 ### Testnet smoke test
@@ -399,7 +471,106 @@ stellar contract invoke \
 
 ---
 
-## 8. Security notes for operators
+## 8. Interaction Matrix: Legal Hold vs. Dispute Pause
+
+The escrow contract implements two independent risk-control overlays:
+
+- **Legal hold** (`DataKey::LegalHold`): a persistent boolean compliance gate
+  controlled by the admin, with no automatic expiry.
+- **Dispute pause** (`DataKey::DisputePause`): a time-bounded administrative
+  freeze with an auto-expiry based on ledger time.
+
+Both controls block overlapping risk-bearing operations. This section documents
+the precedence rules and expected behavior when one or both controls are active.
+
+### Control precedence
+
+**Legal hold is evaluated first.** When both controls are active on the same
+operation, the operation returns the legal-hold error without falling through to
+the dispute-pause check. This is a stable API contract: future changes to this
+precedence require explicit decision-making and must be documented before
+deployment.
+
+### Operation matrix: all four combinations
+
+| State | `fund` / `fund_with_commitment` | `settle` | `withdraw` | `claim_investor_payout` | `sweep_terminal_dust` |
+|---|---|---|---|---|---|
+| **Both hold ✓ + pause ✓** | ❌ `LegalHoldBlocksFunding` (102) | ❌ `LegalHoldBlocksSettlement` (120) | ❌ `LegalHoldBlocksWithdrawal` (123) | ❌ `LegalHoldBlocksInvestorClaims` (125) | ❌ `LegalHoldBlocksTreasuryDustSweep` (30) |
+| **Hold ✓ + pause ✗** | ❌ `LegalHoldBlocksFunding` (102) | ❌ `LegalHoldBlocksSettlement` (120) | ❌ `LegalHoldBlocksWithdrawal` (123) | ❌ `LegalHoldBlocksInvestorClaims` (125) | ❌ `LegalHoldBlocksTreasuryDustSweep` (30) |
+| **Hold ✗ + pause ✓** | ❌ `DisputePausedBlocksFunding` (165) | ❌ `DisputePausedBlocksSettlement` (166) | ❌ `DisputePausedBlocksWithdrawal` (167) | ❌ `DisputePausedBlocksInvestorClaims` (168) | ✅ Allowed (dispute pause does not gate treasury operations) |
+| **Hold ✗ + pause ✗** | ✅ (if other preconditions met) | ✅ (if other preconditions met) | ✅ (if other preconditions met) | ✅ (if other preconditions met) | ✅ (if other preconditions met) |
+
+**Key observations:**
+
+- **Dispute pause does not block dust sweep.** This design allows treasury
+  operations to proceed even during dispute resolution. If you need to prevent
+  treasury operations during a dispute, activate a legal hold instead.
+- **Once one control is cleared, the other remains effective.** Clearing legal
+  hold while a dispute pause is active does not unblock operations; they remain
+  blocked by the `DisputePausedBlocksX` error. Conversely, resuming or expiring
+  the dispute pause does not unblock operations if legal hold is still active.
+- **Independent activation and clearing.** Activating hold or pause in either
+  order produces the same final state: both are active. Similarly, clearing them
+  in either order produces the same state. Clearing one never clears the other.
+
+### Clearing mechanism and edge cases
+
+**Legal hold clearing:**
+- Admin calls `set_legal_hold(false, reason)` directly.
+- If a clear-delay is configured (set at init via
+  `legal_hold_clear_delay_secs`), the admin must first call
+  `request_clear_legal_hold()` and wait until the ledger timestamp reaches the
+  returned `clearable_at` boundary before calling `set_legal_hold(false, ...)`.
+- Clearing legal hold does **not** affect an active dispute pause.
+- If the admin key is compromised while legal hold is active, governance must
+  execute `propose_admin` and `accept_admin` to rotate the admin, then the new
+  admin can call `set_legal_hold(false, ...)`.
+
+**Dispute pause clearing:**
+- Admin calls `resume_dispute(reason)` to manually clear the pause before expiry.
+- **Or** the pause expires automatically when `ledger.timestamp() >= expires_at`.
+- Resuming or expiring the dispute pause does **not** affect an active legal
+  hold.
+- The expiry boundary is checked every time an operation is attempted; a pause
+  is considered active if `now < expires_at`, and inactive if `now >= expires_at`.
+
+**Example scenario:**
+
+```
+1. Escrow is open and funded.
+2. Admin activates legal hold for compliance review:
+   set_legal_hold(true, "compliance review INV-002")
+3. Admin also activates dispute pause due to a dispute ticket:
+   pause_dispute("TICKET-456", 86400)  // 24 hours
+4. Attempt settle → blocked by LegalHoldBlocksSettlement (120)
+5. After dispute is resolved, admin calls resume_dispute:
+   → Pause is now inactive
+6. Attempt settle → still blocked by LegalHoldBlocksSettlement (120)
+7. Governance approves and admin clears legal hold:
+   set_legal_hold(false, "compliance review complete")
+8. Attempt settle → succeeds (assuming maturity and other preconditions met)
+```
+
+### Monitoring and alerting
+
+Operators should set up alerts for:
+
+- **Simultaneous activation:** if both `LegalHoldChanged` and `DisputePausedEvt`
+  events occur within a short time window (e.g., < 5 minutes), escalate to the
+  compliance and engineering teams to ensure the activation was intentional.
+- **Prolonged hold + pause combo:** if both controls are active for > 7 days,
+  trigger an automated review of the support ticket and hold reason.
+- **Orphaned pause after hold clear:** if a dispute pause remains active after
+  legal hold is cleared, ensure the pause is either manually resolved or allowed
+  to expire; do not leave a paused escrow in production without active
+  governance review.
+
+See [`docs/DEPLOYER_SECURITY.md`](DEPLOYER_SECURITY.md) §3.1 for event
+monitoring setup.
+
+---
+
+## 9. Security notes for operators
 
 ### Token economics (out of scope)
 
@@ -434,7 +605,7 @@ first implementing the migration path.
 
 ---
 
-## 9. Version compatibility matrix
+## 10. Version compatibility matrix
 
 | WASM version (SCHEMA_VERSION) | Can read data from | Notes |
 |-------------------------------|-------------------|-------|
@@ -445,7 +616,7 @@ first implementing the migration path.
 
 ---
 
-## 10. Glossary
+## 11. Glossary
 
 | Term | Meaning in this context |
 |------|------------------------|

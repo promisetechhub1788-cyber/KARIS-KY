@@ -352,10 +352,7 @@ fn attestation_append_respects_max_entries() {
 
     // Verify order.
     for i in 0u32..MAX_ATTESTATION_APPEND_ENTRIES {
-        assert_eq!(
-            log.get(i).unwrap(),
-            digest(&env, i as u8)
-        );
+        assert_eq!(log.get(i).unwrap(), digest(&env, i as u8));
     }
 }
 
@@ -431,7 +428,139 @@ fn batch_claim_mixed_claimed_and_unclaimed() {
     }
 }
 
-// ── 6. Snapshot size benchmark (1000 investors) ─────────────────────────────
+// ── 6. Batch claim budget benchmark ─────────────────────────────────────────
+
+/// Benchmark: measure the CPU instruction and memory cost of
+/// `batch_claim_investor_payouts` at batch sizes 1, 10, 25, and
+/// `MAX_BATCH_CLAIM` (50), and compare against the equivalent number of
+/// individual `claim_investor_payout` calls to derive per-investor savings.
+///
+/// Run in release mode with:
+/// ```text
+/// cargo test --release benchmark_batch_claim_budget -- --ignored --nocapture
+/// ```
+///
+/// Results are recorded in `escrow-gas-storage-notes.md`.
+#[test]
+#[ignore]
+fn benchmark_batch_claim_budget() {
+    let batch_sizes: [u32; 4] = [1, 10, 25, MAX_BATCH_CLAIM];
+
+    for &size in batch_sizes.iter() {
+        // ── Batch claim measurement ─────────────────────────────────────────
+        let env = Env::default();
+        let (client, investors, _admin) =
+            setup_multi_investor_settled(&env, size, 10_000_000_000i128);
+
+        env.budget().reset_default();
+        let claimed = client.batch_claim_investor_payouts(&investors);
+        let batch_cpu = env.budget().cpu_instruction_cost();
+        let batch_mem = env.budget().memory_bytes_cost();
+        assert_eq!(claimed, size);
+
+        // ── Individual claim measurement ────────────────────────────────────
+        let env_ind = Env::default();
+        let (client_ind, investors_ind, _admin_ind) =
+            setup_multi_investor_settled(&env_ind, size, 10_000_000_000i128);
+
+        env_ind.budget().reset_default();
+        for i in 0..size {
+            client_ind.claim_investor_payout(&investors_ind.get(i).unwrap());
+        }
+        let ind_cpu = env_ind.budget().cpu_instruction_cost();
+        let ind_mem = env_ind.budget().memory_bytes_cost();
+
+        // ── Derived metrics ─────────────────────────────────────────────────
+        let batch_cpu_per = batch_cpu / (size as u64);
+        let ind_cpu_per = ind_cpu / (size as u64);
+        let cpu_savings_per = ind_cpu_per.saturating_sub(batch_cpu_per);
+        let cpu_savings_pct = if ind_cpu_per > 0 {
+            (cpu_savings_per * 100) / ind_cpu_per
+        } else {
+            0
+        };
+
+        let batch_mem_per = batch_mem / (size as u64);
+        let ind_mem_per = ind_mem / (size as u64);
+        let mem_savings_per = ind_mem_per.saturating_sub(batch_mem_per);
+
+        std::println!(
+            "batch_size={:<3} batch_cpu={:<12} batch_mem={:<10} \
+             ind_cpu={:<12} ind_mem={:<10} \
+             batch_cpu/inv={:<10} ind_cpu/inv={:<10} \
+             cpu_savings/inv={:<10} ({:>3}%) mem_savings/inv={}",
+            size,
+            batch_cpu,
+            batch_mem,
+            ind_cpu,
+            ind_mem,
+            batch_cpu_per,
+            ind_cpu_per,
+            cpu_savings_per,
+            cpu_savings_pct,
+            mem_savings_per,
+        );
+
+        // Sanity: batch must not be more expensive per investor than individual.
+        assert!(
+            batch_cpu_per <= ind_cpu_per,
+            "batch claim per-investor CPU ({batch_cpu_per}) exceeds individual ({ind_cpu_per}) at size {size}"
+        );
+    }
+}
+
+/// Benchmark: determine the largest batch size that fits within the Soroban
+/// instruction budget by probing increasing batch sizes.
+///
+/// Run in release mode with:
+/// ```text
+/// cargo test --release benchmark_max_batch_within_budget -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+fn benchmark_max_batch_within_budget() {
+    // Soroban's default per-transaction CPU instruction budget is 100_000_000.
+    const CPU_BUDGET: u64 = 100_000_000;
+
+    let probe_sizes: [u32; 5] = [1, 10, 25, MAX_BATCH_CLAIM, MAX_BATCH_CLAIM];
+
+    let mut largest_fitting: u32 = 0;
+    for &size in probe_sizes.iter() {
+        let env = Env::default();
+        let (client, investors, _admin) =
+            setup_multi_investor_settled(&env, size, 10_000_000_000i128);
+
+        env.budget().reset_default();
+        let claimed = client.batch_claim_investor_payouts(&investors);
+        let cpu = env.budget().cpu_instruction_cost();
+        assert_eq!(claimed, size);
+
+        let fits = cpu <= CPU_BUDGET;
+        std::println!(
+            "probe batch_size={:<3} cpu={:<12} budget={:<12} fits={}",
+            size,
+            cpu,
+            CPU_BUDGET,
+            fits,
+        );
+
+        if fits {
+            largest_fitting = size;
+        }
+    }
+
+    std::println!(
+        "largest batch size within budget ({} CPU): {}",
+        CPU_BUDGET,
+        largest_fitting
+    );
+    assert!(
+        largest_fitting >= 1,
+        "even a single-investor batch claim exceeds the instruction budget"
+    );
+}
+
+// ── 7. Snapshot size benchmark (1000 investors) ─────────────────────────────
 
 /// Benchmark: measure the storage footprint scaling with investor count.
 ///

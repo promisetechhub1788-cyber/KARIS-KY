@@ -158,7 +158,7 @@ fn test_export_state_captures_attestation_log() {
     let (client, _admin, _sme, _token, _treasury) = init_minimal(&env);
 
     let digest = soroban_sdk::BytesN::from_array(&env, &[0xABu8; 32]);
-    client.append_attestation_digest(&digest);
+    client.append_attestation_digest(&digest, &Symbol::new(&env, ""));
 
     let export = client.export_state();
     assert_eq!(export.attestation_log.len(), 1);
@@ -194,6 +194,41 @@ fn test_import_state_round_trip() {
     assert_eq!(target.get_version(), SCHEMA_VERSION);
     assert_eq!(target.get_unique_funder_count(), 0);
     assert!(!target.get_legal_hold());
+}
+
+#[test]
+fn test_import_state_preserves_attestation_hash_and_log() {
+    let env = Env::default();
+    let (src, _admin, _sme, _token, _treasury) = init_minimal(&env);
+
+    let primary_hash = soroban_sdk::BytesN::from_array(&env, &[0xA1u8; 32]);
+    src.bind_primary_attestation_hash(&soroban_sdk::Bytes::from_array(
+        &env,
+        &[0xA1u8; 32],
+    ));
+    let digests = [
+        soroban_sdk::BytesN::from_array(&env, &[0xB1u8; 32]),
+        soroban_sdk::BytesN::from_array(&env, &[0xB2u8; 32]),
+        soroban_sdk::BytesN::from_array(&env, &[0xB3u8; 32]),
+    ];
+    for digest in &digests {
+        src.append_attestation_digest(digest, &Symbol::new(&env, ""));
+    }
+
+    let export = src.export_state();
+    assert_eq!(export.primary_attestation_hash, Some(primary_hash.clone()));
+    assert_eq!(export.attestation_log.len(), 3);
+
+    let target_id = deploy_id(&env);
+    let target = LiquifactEscrowClient::new(&env, &target_id);
+    target.import_state(&export);
+
+    assert_eq!(target.get_primary_attestation_hash(), Some(primary_hash));
+    let restored_log = target.get_attestation_log();
+    assert_eq!(restored_log.len(), digests.len() as u32);
+    for (index, digest) in digests.iter().enumerate() {
+        assert_eq!(restored_log.get(index as u32).unwrap(), *digest);
+    }
 }
 
 #[test]

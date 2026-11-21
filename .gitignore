@@ -1,5 +1,5 @@
 # Build
-/target/
+target/
 target_local/
 **/*.rs.bk
 Cargo.lock
@@ -8,6 +8,7 @@ Cargo.lock
 # Local command outputs (generated)
 build_output*.txt
 test_output*.txt
+*.log
 
 # Local notes / PR scratch files
 PR_DESCRIPTION.md

@@ -184,7 +184,10 @@ fn test_fund_batch_accepts_max_entries() {
 
     // Should succeed.
     let result = client.try_fund_batch(&batch);
-    assert!(result.is_ok(), "fund_batch with MAX_FUND_BATCH entries should succeed");
+    assert!(
+        result.is_ok(),
+        "fund_batch with MAX_FUND_BATCH entries should succeed"
+    );
 
     let escrow = client.get_escrow();
     assert_eq!(escrow.funded_amount, target, "all entries should be funded");
@@ -434,22 +437,22 @@ fn test_per_investor_storage_no_unbounded_enumeration() {
     // it must be explicitly designed to prevent DOS.)
 }
 
-/// Documentation: Storage Cost Analysis
-///
-/// **Key Access Patterns:**
-///
-/// 1. `get_escrow()`: Instance storage read O(1), deserialization O(struct_size).
-/// 2. `get_contribution(investor)`: Persistent storage read O(1) per investor.
-/// 3. `fund()`: 2 writes (update funded_amount, record contribution).
-/// 4. `settle()`: 1 write (update status), 1 event publish.
-/// 5. `claim_investor_payout()`: 2 writes (mark claimed, idempotent).
-/// 6. Attestation log append: 1 read (load Vec), 1 write (persisted Vec).
-///   - Cost scales linearly with log size up to 32 entries.
-///   - Acceptable because cap is small.
-///
-/// **Worst-case per-call storage cost:**
-/// - `fund_batch` with 50 entries: 50 * 2 = 100 writes.
-/// - Attestation append: 1 read (32 entries) + 1 write (33 entries) = 2 large ops.
-/// - Dust sweep: 1 token transfer (external call).
-///
-/// All worst-cases are well below typical Soroban per-ledger resource budgets.
+// Documentation: Storage Cost Analysis
+//
+// **Key Access Patterns:**
+//
+// 1. `get_escrow()`: Instance storage read O(1), deserialization O(struct_size).
+// 2. `get_contribution(investor)`: Persistent storage read O(1) per investor.
+// 3. `fund()`: 2 writes (update funded_amount, record contribution).
+// 4. `settle()`: 1 write (update status), 1 event publish.
+// 5. `claim_investor_payout()`: 2 writes (mark claimed, idempotent).
+// 6. Attestation log append: 1 read (load Vec), 1 write (persisted Vec).
+//   - Cost scales linearly with log size up to 32 entries.
+//   - Acceptable because cap is small.
+//
+// **Worst-case per-call storage cost:**
+// - `fund_batch` with 50 entries: 50 * 2 = 100 writes.
+// - Attestation append: 1 read (32 entries) + 1 write (33 entries) = 2 large ops.
+// - Dust sweep: 1 token transfer (external call).
+//
+// All worst-cases are well below typical Soroban per-ledger resource budgets.

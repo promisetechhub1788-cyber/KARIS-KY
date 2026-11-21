@@ -84,9 +84,11 @@ done
 - [ ] Legal hold set on all funded instances
 - [ ] Record timestamp: `_________________`
 
-### Deploy upgrade (if upgrade entrypoint exists)
+### Propose upgrade (two-step flow, step 1 of 2)
 
-> **Note:** Current karis-ky contract does NOT expose upgrade entrypoint. Use redeploy path instead.
+> **Note:** `upgrade` is now gated behind a two-step propose/execute flow with a
+> minimum delay. The legacy direct `upgrade --new_wasm_hash` entrypoint must not
+> be used; it is deprecated and will be removed at the next interface version bump.
 
 ```bash
 for CONTRACT_ID in $INSTANCE_IDS; do
@@ -94,12 +96,53 @@ for CONTRACT_ID in $INSTANCE_IDS; do
     --id $CONTRACT_ID \
     --source $SOURCE_SECRET \
     --network mainnet \
-    -- upgrade --new_wasm_hash <WASM_HASH>
+    -- propose_upgrade --new_wasm_hash <WASM_HASH>
 done
 ```
 
-- [ ] Upgrade invocation succeeds for all instances
+- [ ] Proposal invocation succeeds for all instances
 - [ ] No timeouts or RPC errors
+- [ ] Record proposal timestamp per instance: `_________________`
+
+### Confirm proposal event (before execution)
+
+```bash
+# Inspect the Soroban event stream for the propose_upgrade event on each instance.
+# Expected event topic: propose_upgrade (with the proposed WASM hash and executable-at ledger/time).
+stellar events \
+  --id $CONTRACT_ID \
+  --network mainnet \
+  --start-ledger <PROPOSE_LEDGER>
+```
+
+- [ ] `propose_upgrade` event observed for every instance
+- [ ] Event payload WASM hash matches the uploaded hash
+- [ ] Event payload executable-at time matches the recorded proposal timestamp + minimum delay
+- [ ] No unexpected or duplicate proposal events
+
+### Wait out the minimum delay
+
+- [ ] Confirm the minimum delay has elapsed since the proposal timestamp
+- [ ] Do **not** attempt `execute_upgrade` before the delay expires (it will fail)
+- [ ] Record earliest executable time per instance: `_________________`
+
+### Execute upgrade (two-step flow, step 2 of 2)
+
+```bash
+for CONTRACT_ID in $INSTANCE_IDS; do
+  stellar contract invoke \
+    --id $CONTRACT_ID \
+    --source $SOURCE_SECRET \
+    --network mainnet \
+    -- execute_upgrade
+done
+```
+
+- [ ] Execution invocation succeeds for all instances
+- [ ] No timeouts or RPC errors
+- [ ] `execute_upgrade` event observed for every instance
+- [ ] Event payload WASM hash matches the proposed hash
+=======
 
 ### Verify upgrades
 
@@ -316,15 +359,34 @@ stellar contract invoke \
 
 ### Step 4: Rollback (additive upgrade only)
 
+Rollback uses the same guarded two-step flow: propose the old WASM hash, wait out
+the minimum delay, then execute.
+
 ```bash
-stellar contract invoke \
-  --id $AFFECTED_INSTANCES \
-  --source $SOURCE_SECRET \
-  --network mainnet \
-  -- upgrade --new_wasm_hash <OLD_WASM_HASH>
+for CONTRACT_ID in $AFFECTED_INSTANCES; do
+  stellar contract invoke \
+    --id $CONTRACT_ID \
+    --source $SOURCE_SECRET \
+    --network mainnet \
+    -- propose_upgrade --new_wasm_hash <OLD_WASM_HASH>
+done
+```
+
+- [ ] `propose_upgrade` event observed for all affected instances
+- [ ] Minimum delay elapsed since proposal
+
+```bash
+for CONTRACT_ID in $AFFECTED_INSTANCES; do
+  stellar contract invoke \
+    --id $CONTRACT_ID \
+    --source $SOURCE_SECRET \
+    --network mainnet \
+    -- execute_upgrade
+done
 ```
 
 - [ ] Rollback invocation succeeds
+- [ ] `execute_upgrade` event observed for all affected instances
 - [ ] `get_version` and `get_escrow` return data correctly
 - [ ] State matches pre-upgrade snapshot (verified)
 - [ ] Legal hold remains active pending investigation

@@ -39,6 +39,52 @@ This directory contains **auto-generated visual architecture documentation** der
 | **[module-structure.md](module-structure.md)** | Code organization (lib.rs, external_calls.rs, validation.rs) | Developers |
 | **[entrypoint-matrix.md](entrypoint-matrix.md)** | Role-based API surface (admin, SME, investor, treasury) | Integrators |
 | **[storage-reference.md](storage-reference.md)** | Detailed `DataKey` and type catalog | Developers, Auditors |
+| **[sharding-architecture.md](sharding-architecture.md)** | Investor storage sharding for 10k+ investor escrows | Scalability engineers |
+| **[INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md)** | Off-chain integration patterns and best practices | Integrators |
+
+---
+
+## Sharding Architecture
+
+### For Large-Scale Escrows (10k+ Investors)
+
+The karis-ky contract supports **optional investor storage sharding** to scale beyond typical Soroban instance storage limits. Instead of storing all per-investor data in the primary contract's instance storage, investor contributions, yields, and claims are delegated to **shard contracts** spawned on-demand.
+
+**Key files:**
+- **[sharding-architecture.md](sharding-architecture.md)** — Complete sharding design, routing strategy, spawning, aggregation, and integration
+- **[plantuml/sharding-architecture.puml](plantuml/sharding-architecture.puml)** — Component architecture diagram
+- **[plantuml/sharding-flows.puml](plantuml/sharding-flows.puml)** — Sequence diagrams for fund, settle, and claim flows with sharding
+- **`escrow/src/sharding.rs`** — Sharding module implementation
+
+**Quick reference:**
+
+| Aspect | Design |
+|--------|--------|
+| **Routing** | Deterministic hash: `shard_id = hash(investor) % shard_count` |
+| **Spawning** | Lazy, on-demand when first investor routes to a shard |
+| **Storage** | Investor data in persistent storage (per-address TTL) |
+| **Aggregation** | Settlement queries all shards and verifies aggregate total == primary funded_amount |
+| **Max shards** | Configurable at init (typically 256 or 1024) |
+| **Backward compatible** | Single-shard escrows operate identically; sharding is optional |
+
+**When to use sharding:**
+- Escrow with 10,000+ unique investors
+- Instance storage approaching limits
+- Need for unbounded investor cardinality
+
+**Typical architecture:**
+```
+Primary Escrow (slim state)
+  ├─ Sharding config
+  ├─ Shard registry (shard_id → address)
+  ├─ Aggregate totals (funded_amount, unique_funder_count)
+  └─ FundingCloseSnapshot (immutable)
+
+Shard 0 ─ Investors 0, 2, 5, ...  (hash(addr) % N == 0)
+Shard 1 ─ Investors 1, 3, 6, ...  (hash(addr) % N == 1)
+...
+Shard N ─ Investors M, M+2, ...   (hash(addr) % N == N)
+```
 
 ---
 
@@ -168,4 +214,4 @@ For context on design decisions and operational procedures:
 
 ## License
 
-MIT (see [LICENSE](../../LICENSE) in root)
+MIT (see the [escrow package metadata](../../escrow/Cargo.toml))

@@ -12,6 +12,29 @@ pre-integration test script you can run before deploying to mainnet.
 
 ---
 
+## Token requirements for `funding_token`
+
+The escrow accepts a single SEP-41 `funding_token` per instance. Before deploying, confirm
+the token satisfies every row below. Error codes are defined in
+[`escrow-error-messages.md`](escrow-error-messages.md).
+
+| Property | Supported? | Notes | Error code on violation |
+|----------|-----------|-------|-------------------------|
+| **Decimals** | ✅ Yes — fixed, known at deploy time | Amounts are raw `i128` in the token's smallest unit; the contract performs **no on-chain decimal conversion**. SAC tokens (USDC, USDT, EURC, native XLM) use **7 decimals** — encode all amounts as `human_amount × 10^7`. Any fixed decimal count works as long as it never changes and every amount is encoded consistently. | No typed error — mis-encoded amounts silently mis-price the escrow (e.g. `InsufficientContractBalance` = **183** at withdraw time if under-encoded) |
+| **Fee-on-transfer** | ❌ No | `transfer()` must move exactly `amount`: sender delta and recipient delta must both equal `amount`. Any deducted fee fails the balance-delta invariant at `fund()` time. | **36** `TransferAmountNotPositive`, **37** `InsufficientTokenBalanceBeforeTransfer`, **38** `SenderBalanceUnderflow`, **39** `RecipientBalanceUnderflow`, **40** `SenderBalanceDeltaMismatch`, **41** `RecipientBalanceDeltaMismatch` |
+| **Rebasing / deflationary** | ❌ No | Balances must not change autonomously between reads. Positive rebases leave unattributed residue; negative rebases (deflation) mean the contract holds less than `funded_amount`, so `withdraw()` cannot pay out the recorded principal. | **183** `InsufficientContractBalance` at withdraw time (shortfall surfaces when the contract balance is below the amount being transferred) |
+| **Dynamic decimals** | ❌ No | Decimals must be immutable post-deploy; a mid-lifecycle change breaks every stored amount. | No typed error — silent integer misalignment |
+| **Pausable / blacklistable transfers** | ⚠️ Allowed but risky | `transfer()` reverting (paused token, blacklisted escrow address) blocks `withdraw()`, `refund()` and `sweep_terminal_dust()`. | Token panic propagates (no escrow error code) |
+| **Callback / hook tokens** | ❌ No | Re-entrancy or balance mutation during `transfer()` breaks the before/after delta comparison. | **40** `SenderBalanceDeltaMismatch`, **41** `RecipientBalanceDeltaMismatch` |
+
+> **Summary:** the token must be a fixed-supply-semantics, fixed-decimal SEP-41 token whose
+> `transfer` moves exactly `amount` and whose `balance` never changes without a transfer.
+> See [§4](#4-balance-delta-invariant--what-the-contract-enforces) for the enforcement code,
+> [§5](#5-fee-on-transfer-token-warning) for fee-on-transfer details, and
+> [§6](#6-rebasing-token-pitfalls) for rebasing details.
+
+---
+
 ## Contents
 
 1. [How the escrow holds tokens](#1-how-the-escrow-holds-tokens)

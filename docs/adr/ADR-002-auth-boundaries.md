@@ -16,7 +16,8 @@ Multiple principals interact with the escrow (admin, SME, investors, treasury). 
 |---|---|
 | `init` | `admin` |
 | `fund`, `fund_with_commitment` | `investor` (per-call) |
-| `settle`, `withdraw` | `sme_address` |
+| `settle` | `sme_address` |
+| `withdraw` | `sme_address` (verified: caller == escrow.sme_address after require_auth) |
 | `claim_investor_payout` | `investor` |
 | `sweep_terminal_dust` | `treasury` (immutable after init) |
 | `set_legal_hold`, `clear_legal_hold` | `admin` |
@@ -33,6 +34,7 @@ There is no superuser that can act as all roles simultaneously unless the same k
 
 - A compromised investor key cannot settle or sweep funds.
 - A compromised SME key cannot change the admin or sweep dust.
+- **SME identity verification:** `withdraw` explicitly verifies that the caller is the registered SME address (`caller == escrow.sme_address`) after `require_auth()` succeeds. This prevents confusion from cross-calling multiple escrow instances or unauthorized invocation where auth could be spoofed through contract-account delegation.
 - Treasury auth on `sweep_terminal_dust` means the admin cannot drain the contract as "dust" unless it is also the treasury.
 - Legal hold can only be set/cleared by admin, so governance controls compliance freezes.
 - Admin authority changes only after both the current admin and successor have authorized. A typo in `new_admin` can be corrected by a new `propose_admin` call and does not lock admin-gated paths.

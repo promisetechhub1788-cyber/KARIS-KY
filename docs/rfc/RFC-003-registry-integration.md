@@ -1,6 +1,6 @@
 # RFC-003: Registry Integration
 
-**Status:** ACCEPTED  
+**Status:** IMPLEMENTED  
 **Author:** Platform Architecture (@karis-ky)  
 **Date Proposed:** 2026-06-15  
 **Date Accepted:** 2026-07-10  
@@ -142,38 +142,20 @@ pub enum DataKey {
 
 **Component 3: Escrow Integration Points**
 
-**At `init()` time:**
+**After `init()` via the admin-only `register_with_registry()` entrypoint:**
 
 ```rust
-pub fn init(
-    ...,
-    registry: Option<Address>,  // NEW
-    ...,
-) -> Result<EscrowSummary, EscrowError> {
-    // ... validation ...
-    
-    // If registry provided, register this escrow
-    if let Some(registry_addr) = registry {
-        external_calls::register_escrow_with_registry(
-            &env,
-            registry_addr,
-            invoice_id.clone(),
-            admin.clone(),
-            sme_address.clone(),
-            funding_token.clone(),
-            funding_target,
-            maturity,
-            metadata,
-        )?;
-    }
-    
-    // Store registry reference (immutable)
-    env.storage().instance().set(
-        &DataKey::RegistryRef,
+pub fn register_with_registry(env: Env) -> bool {
+    let escrow = load_escrow_require_admin(&env);
+    let Some(registry) = get_registry_ref(&env) else {
+        return false;
+    };
+    external_calls::register_escrow_with_registry(
+        &env,
         &registry,
-    );
-    
-    // ... rest of init ...
+        escrow.invoice_id,
+        env.current_contract_address(),
+    )
 }
 ```
 
@@ -206,16 +188,11 @@ pub fn register_escrow_with_registry(
     env: &Env,
     registry: Address,
     escrow_id: Symbol,
-    admin: Address,
-    sme: Address,
-    token: Address,
-    target: i128,
-    maturity: u64,
-    metadata: EscrowMetadata,
-) -> Result<(), EscrowError> {
+    escrow_address: Address,
+) -> bool {
     // Call registry's register_escrow() function
     // Handle errors gracefully (non-blocking if registry fails)
-    Ok(())
+    true
 }
 
 pub fn update_registry_status(
@@ -352,10 +329,10 @@ Registry is **external to escrow contract**. Escrow changes minimal:
 ### Milestones
 
 **Week 1:** Escrow integration
-- [ ] Escrow calls registry.register_escrow() at init
+- [x] Escrow exposes admin-only `register_with_registry()` and calls registry.register_escrow()
 - [ ] Escrow calls registry.update_escrow_status() post-settle
-- [ ] Error handling for registry failures (non-blocking)
-- [ ] Unit tests for registry calls
+- [x] Error handling for registry failures (non-blocking)
+- [x] Unit tests for registry calls
 
 **Week 2:** Registry contract (parallel)
 - [ ] Registry contract design + implementation
@@ -446,7 +423,7 @@ Registry is **external to escrow contract**. Escrow changes minimal:
 
 ## Implementation Status
 
-**Status:** ACCEPTED → IMPLEMENTED  
+**Status:** IMPLEMENTED  
 **Tracked in:** GitHub Project "v1.4 Registry Integration"  
 **PRs:**
 - escrow-contracts#1001: "Add registry integration to escrow init/settle"

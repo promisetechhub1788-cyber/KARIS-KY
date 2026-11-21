@@ -1,0 +1,44 @@
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+        name: gitleaks
+        description: Detect hardcoded secrets using gitleaks
+        entry: gitleaks protect --verbose --redact --staged
+        language: golang
+        pass_filenames: false
+        stages: [commit]
+        exclude: |
+          (?x)^(
+            docs/.*|
+            node_modules/.*|
+            target/.*|
+            .*/node_modules/.*|
+            .*/target/.*|
+            .*/docs/.*
+          )$
+
+  # Focused lint/format gate for the CLI crate (`repl-cli`).
+  # Mirrors the checks CI enforces so contributors catch clippy/fmt issues
+  # locally before pushing. Run manually with:
+  #   pre-commit run --all-files
+  # or target individual hooks:
+  #   pre-commit run repl-cli-clippy --all-files
+  #   pre-commit run repl-cli-fmt --all-files
+  - repo: local
+    hooks:
+      - id: repl-cli-clippy
+        name: repl-cli clippy
+        description: Run clippy on the repl-cli crate, denying warnings
+        entry: cargo clippy -p repl-cli -- -D warnings
+        language: system
+        pass_filenames: false
+        files: ^(repl-cli/|Cargo\.(toml|lock)$)
+      - id: repl-cli-fmt
+        name: repl-cli fmt
+        description: Check formatting of the repl-cli crate
+        entry: cargo fmt --check
+        language: system
+        pass_filenames: false
+        files: ^(repl-cli/|Cargo\.(toml|lock)$)

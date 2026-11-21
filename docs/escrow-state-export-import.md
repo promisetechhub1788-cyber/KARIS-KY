@@ -25,7 +25,7 @@ if the target contract already has any `DataKey::Escrow` storage.
 ## What `export_state` captures
 
 `export_state` serializes all **instance-storage** keys into a single
-`EscrowStateExport` struct returned on-chain and emitted in a
+`EscrowSnapshot` struct returned on-chain and emitted in a
 `StateExportedEvt` event.
 
 | Captured field | Storage key |
@@ -46,7 +46,7 @@ if the target contract already has any `DataKey::Escrow` storage.
 | Legal hold clearable-at timestamp | `DataKey::LegalHoldClearableAt` |
 | Allowlist active flag | `DataKey::AllowlistActive` |
 | Primary attestation hash | `DataKey::PrimaryAttestationHash` |
-| Attestation append log | `DataKey::AttestationAppendLog` |
+| Attestation append log | `DataKey::AttestationAppendLog` (legacy) or `DataKey::AttestationAppendLogCount` plus `DataKey::AttestationLogEntry(index)` |
 | SME collateral commitment | `DataKey::SmeCollateralPledge` |
 | Distributed principal | `DataKey::DistributedPrincipal` |
 | Funding deadline | `DataKey::FundingDeadline` |
@@ -74,12 +74,12 @@ The following keys are stored in **persistent storage keyed by investor
 
 ## Checksum
 
-`export_state` computes a SHA-256 checksum over the following 64-byte
-big-endian concatenation:
+`export_state` computes a SHA-256 checksum over the following 56-byte
+big-endian concatenation of core escrow fields:
 
 ```
-version(4) | funded_amount(16) | funding_target(16) | yield_bps(8)
-  | status(4) | maturity(8) | exported_at(8)
+schema_version(4) | funded_amount(16) | funding_target(16) | yield_bps(8)
+  | status(4) | maturity(8)
 ```
 
 `import_state` recomputes this checksum from the fields in the provided export
@@ -93,6 +93,11 @@ do not match. This prevents:
 > **Note:** The checksum is an integrity guard, not a signature. A holder of
 > the admin key can craft a valid export with arbitrary field values. Protect
 > import authority with a multisig admin.
+
+The snapshot includes the optional primary attestation hash and the complete
+append-log digest sequence. On import, the digest sequence is restored into the
+indexed instance-storage representation used by current contracts, preserving
+the log returned by `get_attestation_log`.
 
 ---
 

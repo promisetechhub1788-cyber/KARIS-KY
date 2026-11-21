@@ -1,0 +1,176 @@
+@startuml ShardingArchitecture
+!define PRIMARY_COLOR #FFE6E6
+!define SHARD_COLOR #E6F3FF
+!define DATA_COLOR #F0F0F0
+!define FLOW_COLOR #E6FFE6
+
+skinparam classBackgroundColor<<primary>> PRIMARY_COLOR
+skinparam classBackgroundColor<<shard>> SHARD_COLOR
+skinparam classBackgroundColor<<data>> DATA_COLOR
+skinparam classBackgroundColor<<flow>> FLOW_COLOR
+skinparam classFontColor #000000
+skinparam classArrowColor #333333
+skinparam backgroundColor #FFFFFF
+skinparam packageStyle node
+skinparam defaultFontName Arial
+
+package "Soroban Environment" {
+    package "Primary Escrow Contract" <<primary>> {
+        class "LiquifactEscrow" <<primary>> {
+            - invoice_id: String
+            - amount: i128
+            - target: i128
+            - status: u8
+            - funded_amount: i128
+            - unique_funder_count: u32
+            --
+            + fund(investor, amount)
+            + fund_batch(entries)
+            + settle()
+            + claim_investor_payout(investor)
+            + aggregate_shard_state(): ShardAggregateState
+        }
+
+        class "ShardingConfig" <<data>> {
+            - max_shards: u32
+            - hash_seed: u32
+            - target_investors_per_shard: u32
+            --
+            + default(): ShardingConfig
+        }
+
+        class "Shard Registry" <<data>> {
+            - shard_id → Address
+            --
+            + get_shard_address(shard_id): Option<Address>
+            + register_shard(shard_id, address)
+        }
+    }
+
+    package "Shard Contracts (Spawned On-Demand)" <<shard>> {
+        class "ShardContract 0" <<shard>> {
+            - shard_id: u32
+            - primary_escrow: Address
+            --
+            + fund_investor(investor, amount)
+            + get_shard_aggregate_state(): ShardAggregateState
+            + claim_investor_payout(investor): i128
+        }
+
+        class "ShardContract 1" <<shard>> {
+            - shard_id: u32
+            - primary_escrow: Address
+            --
+            + fund_investor(investor, amount)
+            + get_shard_aggregate_state(): ShardAggregateState
+            + claim_investor_payout(investor): i128
+        }
+
+        class "ShardContract N" <<shard>> {
+            - shard_id: u32
+            - primary_escrow: Address
+            --
+            + fund_investor(investor, amount)
+            + get_shard_aggregate_state(): ShardAggregateState
+            + claim_investor_payout(investor): i128
+        }
+    }
+
+    package "Persistent Storage (Shard Data)" <<data>> {
+        class "Shard 0 Investors" <<data>> {
+            [InvestorContribution(addr_0) → i128]
+            [InvestorEffectiveYield(addr_0) → i64]
+            [InvestorClaimed(addr_0) → bool]
+            [InvestorContribution(addr_2) → i128]
+            [InvestorEffectiveYield(addr_2) → i64]
+            [InvestorClaimed(addr_2) → bool]
+            ...
+        }
+
+        class "Shard 1 Investors" <<data>> {
+            [InvestorContribution(addr_1) → i128]
+            [InvestorEffectiveYield(addr_1) → i64]
+            [InvestorClaimed(addr_1) → bool]
+            [InvestorContribution(addr_3) → i128]
+            [InvestorEffectiveYield(addr_3) → i64]
+            [InvestorClaimed(addr_3) → bool]
+            ...
+        }
+
+        class "Shard N Investors" <<data>> {
+            [InvestorContribution(addr_M) → i128]
+            [InvestorEffectiveYield(addr_M) → i64]
+            [InvestorClaimed(addr_M) → bool]
+            ...
+        }
+    }
+
+    package "Data Structures" <<data>> {
+        class "ShardEntry" <<data>> {
+            - address: Address
+            - created_at_ledger: u32
+            - investor_count_estimate: u32
+        }
+
+        class "ShardAggregateState" <<data>> {
+            - total_contributions: i128
+            - unique_investor_count: u32
+            - shard_count: u32
+        }
+    }
+
+    package "Routing & Aggregation Functions" <<flow>> {
+        class "compute_shard_id()" <<flow>> {
+            Input: investor_address, shard_count
+            ---
+            1. hash = blake3(investor_address)
+            2. hash_u32 = extract_first_4_bytes(hash)
+            3. shard_id = hash_u32 % shard_count
+            ---
+            Output: shard_id ∈ [0, shard_count)
+        }
+
+        class "ensure_shard_exists()" <<flow>> {
+            Input: shard_id, primary_escrow
+            ---
+            1. Check registry for shard_id
+            2. If not found: spawn shard contract
+            3. Register shard address
+            ---
+            Output: shard_address
+        }
+
+        class "aggregate_shard_state()" <<flow>> {
+            Input: shard_count
+            ---
+            1. For each shard_id in [0, shard_count):
+               - Get shard address from registry
+               - Call get_shard_aggregate_state()
+               - Accumulate totals
+            2. Return aggregated state
+            ---
+            Output: ShardAggregateState
+        }
+    }
+}
+
+' Relationships
+LiquifactEscrow --> ShardingConfig : uses
+LiquifactEscrow --> "Shard Registry" : stores & queries
+LiquifactEscrow --> compute_shard_id : routes via
+LiquifactEscrow --> ensure_shard_exists : spawns shards
+LiquifactEscrow --> aggregate_shard_state : aggregates at settlement
+LiquifactEscrow --> ShardContract0 : cross-contract call
+LiquifactEscrow --> ShardContract1 : cross-contract call
+LiquifactEscrow --> ShardContractN : cross-contract call
+
+"Shard Registry" --> ShardEntry : stores entries
+ShardContract0 --> "Shard 0 Investors" : reads/writes
+ShardContract1 --> "Shard 1 Investors" : reads/writes
+ShardContractN --> "Shard N Investors" : reads/writes
+
+aggregate_shard_state --> ShardContract0 : queries state
+aggregate_shard_state --> ShardContract1 : queries state
+aggregate_shard_state --> ShardContractN : queries state
+
+@enduml

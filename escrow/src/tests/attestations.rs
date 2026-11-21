@@ -2,7 +2,7 @@
 //! `append_attestation_digest` (bounded by [`MAX_ATTESTATION_APPEND_ENTRIES`]).
 //!
 //! These tests prove the two chain-anchor invariants:
-//! 1. The primary hash is **write-once** — a second bind panics regardless of the digest value.
+//! 1. The primary hash is **write-once** — a second bind returns a typed error regardless of the digest value.
 //! 2. The append log is **capacity-bounded** — the 33rd entry panics; the 32nd succeeds.
 //!
 //! Neither entrypoint stores ZK proofs or performs off-chain verification. They record a
@@ -45,11 +45,36 @@ fn setup_with_init(env: &Env) -> (LiquifactEscrowClient<'_>, Address) {
 fn test_bind_primary_hash_stores_and_reads() {
     let env = Env::default();
     let (client, _) = setup_with_init(&env);
+    let contract_id = client.address.clone();
     let d = digest(&env, 0xAB);
     client.bind_primary_attestation_hash(&d);
     // getter returns BytesN<32>; check by converting our bytes to BytesN for comparison.
     let stored = client.get_primary_attestation_hash().unwrap();
     assert_eq!(stored, BytesN::from_array(&env, &[0xABu8; 32]));
+    assert_eq!(
+        env.events().all().events().last().unwrap().clone(),
+        AttestationBoundEvt {
+            name: symbol_short!("att_bound"),
+            hash: BytesN::from_array(&env, &[0xABu8; 32]),
+            ledger_timestamp: 12_345,
+        }
+        .to_xdr(&env, &contract_id)
+    );
+}
+
+/// Exactly 32 bytes is the inclusive valid length boundary.
+#[test]
+fn test_bind_primary_hash_32_bytes_succeeds() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    let digest = Bytes::from_array(&env, &[0x32u8; 32]);
+
+    client.bind_primary_attestation_hash(&digest);
+
+    assert_eq!(
+        client.get_primary_attestation_hash(),
+        Some(BytesN::from_array(&env, &[0x32u8; 32]))
+    );
 }
 
 /// Before any bind the getter returns `None`.
@@ -81,16 +106,21 @@ fn test_bind_primary_hash_different_digest_panics() {
     client.bind_primary_attestation_hash(&digest(&env, 0x02));
 }
 
-/// A second bind must fail with a typed contract error for the immutability contract.
+/// A second bind with a different digest returns a typed error and preserves the original hash.
 #[test]
-fn test_bind_primary_hash_second_call_fails_with_primary_attestation_already_bound() {
+fn test_bind_primary_hash_second_call_fails_and_preserves_first_value() {
     let env = Env::default();
     let (client, _) = setup_with_init(&env);
-    let d = digest(&env, 0xAB);
-    client.bind_primary_attestation_hash(&d);
+    let first = digest(&env, 0xAB);
+    let replacement = digest(&env, 0xCD);
+    client.bind_primary_attestation_hash(&first);
     assert_contract_error(
-        client.try_bind_primary_attestation_hash(&d),
-        EscrowError::PrimaryAttestationAlreadyBound,
+        client.try_bind_primary_attestation_hash(&replacement),
+        EscrowError::AttestationHashAlreadyBound,
+    );
+    assert_eq!(
+        client.get_primary_attestation_hash(),
+        Some(BytesN::from_array(&env, &[0xABu8; 32]))
     );
 }
 
@@ -199,6 +229,46 @@ fn test_append_exactly_max_entries_succeeds() {
         client.get_attestation_append_log().len(),
         MAX_ATTESTATION_APPEND_ENTRIES
     );
+}
+
+/// The dedicated read entrypoint returns an empty log before any append.
+#[test]
+fn test_get_attestation_log_empty() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    assert_eq!(client.get_attestation_log().len(), 0);
+}
+
+/// The dedicated read entrypoint returns partial logs in insertion order.
+#[test]
+fn test_get_attestation_log_partial() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    for seed in 0u8..5 {
+        client.append_attestation_digest(&digest_fixed(&env, seed));
+    }
+
+    let log = client.get_attestation_log();
+    assert_eq!(log.len(), 5);
+    for seed in 0u8..5 {
+        assert_eq!(log.get(seed as u32).unwrap(), digest_fixed(&env, seed));
+    }
+}
+
+/// The dedicated read entrypoint returns every entry at maximum capacity.
+#[test]
+fn test_get_attestation_log_full() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    for seed in 0u8..(MAX_ATTESTATION_APPEND_ENTRIES as u8) {
+        client.append_attestation_digest(&digest_fixed(&env, seed));
+    }
+
+    let log = client.get_attestation_log();
+    assert_eq!(log.len(), MAX_ATTESTATION_APPEND_ENTRIES);
+    for seed in 0u8..(MAX_ATTESTATION_APPEND_ENTRIES as u8) {
+        assert_eq!(log.get(seed as u32).unwrap(), digest_fixed(&env, seed));
+    }
 }
 
 /// The 33rd entry must panic — capacity is strictly bounded.

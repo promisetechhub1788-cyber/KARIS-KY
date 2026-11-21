@@ -93,7 +93,8 @@ Week 6:   Documentation & Release  [28 hours]
 QUALITY TARGETS
 ─────────────────────────────────────────────────────────────────────────────
 
-Test Coverage:           ≥ 95%
+Test Coverage:           ≥ 95% (reported in CI job summary: test counts
+                         and coverage delta vs main via cargo-llvm-cov)
 Trace Overhead:          < 1% (when disabled)
 Benchmark Regression:    ±10% detection
 Parallel Speedup:        3-4x (off-contract)

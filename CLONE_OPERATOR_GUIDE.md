@@ -118,6 +118,22 @@ Look for `EscrowCloned` event in the transaction receipt:
 2. Check token decimals (e.g., USDC has 6 decimals)
 3. For 1M USDC: pass `1_000_000_000_000` (12 zeros)
 
+### Error 216: InvalidFundingTarget
+
+**Cause**: Template escrow has `funding_target <= 0`
+
+**Solution**:
+1. Verify template escrow has a valid, strictly positive funding target
+2. Ensure the template was initialized properly and has not suffered state corruption
+
+### Error 3: EscrowAlreadyInitialized
+
+**Cause**: The target contract has already been initialized
+
+**Solution**:
+1. Deploy a fresh, uninitialized contract instance before invoking `clone_settled_escrow`
+
+
 ### Error 4: InvoiceIdInvalidLength
 
 **Cause**: `new_invoice_id` is empty or > 32 characters

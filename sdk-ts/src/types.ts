@@ -1,7 +1,7 @@
 // karis-ky Escrow SDK — Type Definitions
 //
 // Auto-generated from contract spec (spec.json) and audited against the
-// Rust source (escrow/src/lib.rs). Schema version 6, interface version 1.
+// Rust source (escrow/src/lib.rs). Schema version 8, interface version 1.
 //
 // See docs/escrow-error-messages.md for the full error code reference.
 
@@ -42,7 +42,29 @@ export interface InvoiceEscrow {
   yield_bps: string; // i64 → bigint string
   maturity: string; // u64 → bigint string
   status: EscrowStatus;
+  guardian: string | null;
+  unique_funder_count?: number;
 }
+
+/** Summary statistics of funding progress and investor participation. */
+export interface FundingStats {
+  funded_amount: string;
+  funding_target: string;
+  unique_funder_count: number;
+  status: EscrowStatus;
+}
+
+/** Settlement event payload emitted at settlement. */
+export interface SettledEvent {
+  invoice_id: string;
+  funded_amount: string;
+  yield_bps: number;
+  maturity: number;
+  settled_at_ledger_timestamp: number;
+}
+
+/** Alias for SettledEvent */
+export type SettledEvt = SettledEvent;
 
 /** One step in the optional tiered yield ladder. Immutable after init. */
 export interface YieldTier {
@@ -73,10 +95,100 @@ export interface EscrowSummary {
   funding_close_snapshot: FundingCloseSnapshot | null;
   unique_funder_count: number;
   is_allowlist_active: boolean;
+  allowlist_active: boolean;
+  dispute_pause_active: boolean;
+  dispute_pause_expiry: string | null;
   schema_version: number;
   sme_collateral_commitment: SmeCollateralCommitment | null;
   has_primary_attestation: boolean;
   attestation_log_length: number;
+}
+
+/** Quick health check result returned by check_escrow_health. */
+export interface CheckEscrowHealth {
+  warning_type: string; // Human-readable warning label or "healthy"
+  funded_ratio_bps: string; // i64 → bigint string, basis points (0-10000)
+  time_to_maturity_secs: string; // i64 → bigint string, seconds until maturity
+}
+
+/** Full escrow health diagnostic returned by get_escrow_health. */
+export interface EscrowHealth {
+  warning_type: string; // Human-readable warning label or "healthy"
+  funded_ratio_bps: string; // i64 → bigint string, basis points (0-10000)
+  time_to_maturity_secs: string; // i64 → bigint string, seconds until maturity
+  status_label: string; // Human-readable status (e.g., "Open", "Funded", "Settled")
+  is_maturity_locked: boolean;
+  is_legal_held: boolean;
+  unique_funder_count: number;
+}
+
+/** Investor capacity status returned by get_investor_cap_status. */
+export interface InvestorCapStatus {
+  /** Maximum number of distinct investors allowed (2^32-1 if unlimited). */
+  max: number;
+  /** Current number of distinct investors that have contributed. */
+  current: number;
+  /** Remaining slots for new investors; 0 means cap reached. */
+  remaining: number;
+  /** Whether the investor cap is at maximum. */
+  is_full: boolean;
+}
+
+/** Per-investor position snapshot returned by `get_investor_position`. */
+export interface InvestorPosition {
+  contribution: string;
+  yield_bps: string;
+  claim_not_before: string;
+  claimed: boolean;
+  refunded: boolean;
+  lock_in_until: string;
+  yield_claim_delegate: string | null;
+}
+
+/** One checkpoint entry in an investor's funding history. */
+export interface InvestorFundingRecord {
+  /** Kind of checkpoint: "deposit", "funding_close", or "settlement". */
+  checkpoint: string;
+  /** Ledger timestamp when this checkpoint was recorded. */
+  timestamp: string;
+  /** Amount associated with this checkpoint (deposit amount or payout at settlement). */
+  amount: string;
+  /** Investor's cumulative principal contribution as of this checkpoint. */
+  cumulative_total: string;
+}
+
+/** Snapshot payload returned by `export_state` and accepted by `import_state`. */
+export interface EscrowSnapshot {
+  escrow: InvoiceEscrow;
+  schema_version: number;
+  funding_token: string;
+  treasury: string;
+  registry: string | null;
+  yield_tiers: YieldTier[] | null;
+  funding_close_snapshot: FundingCloseSnapshot | null;
+  min_contribution_floor: string;
+  max_unique_investors_cap: number | null;
+  max_per_investor_cap: string | null;
+  unique_funder_count: number;
+  legal_hold: boolean;
+  legal_hold_clear_delay: string;
+  legal_hold_clearable_at: string | null;
+  allowlist_active: boolean;
+  primary_attestation_hash: string | null;
+  attestation_log: string[];
+  collateral: SmeCollateralCommitment | null;
+  distributed_principal: string;
+  funding_deadline: string | null;
+  pending_admin: string | null;
+  checksum: string;
+}
+
+/** Investor capacity snapshot returned by `get_investor_cap_status`. */
+export interface InvestorCapStatus {
+  max: number;
+  current: number;
+  remaining: number;
+  is_full: boolean;
 }
 
 /** Structured error diagnostic emitted alongside contract errors. */
@@ -98,15 +210,64 @@ export interface EscrowTemplate {
 }
 
 // ---------------------------------------------------------------------------
+// Event streaming types
+// ---------------------------------------------------------------------------
+
+/** Decoded `AttestationBoundEvt` payload; the hash is lowercase hex and u64 time is decimal. */
+export interface AttestationBoundEvt {
+  hash: string;
+  ledger_timestamp: string;
+}
+
+/** A contract event returned by Soroban RPC, with the escrow contract ID attached. */
+export interface EscrowEvent {
+  id: string;
+  type: string;
+  contract_id: string;
+  ledger: number;
+  ledger_closed_at: string;
+  paging_token: string;
+  topics: unknown[];
+  value: unknown;
+  /** Decoded event name when the RPC adapter can provide it. */
+  name?: string;
+}
+
+/** Result page returned by a Soroban RPC getEvents adapter. */
+export interface SorobanEventPage {
+  events: EscrowEvent[];
+  latest_ledger?: number;
+  cursor?: string;
+}
+
+/** Controls polling, paging, and cancellation for an escrow event stream. */
+export interface EscrowEventSubscriptionOptions {
+  /** First ledger to query. Defaults to the current ledger. */
+  start_ledger?: number;
+  /** Resume from a Soroban paging token. */
+  cursor?: string;
+  /** Optional decoded event names to deliver. */
+  event_names?: readonly string[];
+  /** Delay between empty polls. Defaults to 5 seconds. */
+  poll_interval_ms?: number;
+  /** Maximum events requested per RPC call. Defaults to 100. */
+  limit?: number;
+  /** Stops the stream without throwing when aborted. */
+  signal?: AbortSignal;
+}
+
+// ---------------------------------------------------------------------------
 // Contract constants
 // ---------------------------------------------------------------------------
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 8;
 export const CONTRACT_INTERFACE_VERSION = 1;
 export const MAX_INVOICE_ID_STRING_LEN = 32;
 export const MAX_ATTESTATION_APPEND_ENTRIES = 32;
 export const MAX_INVESTOR_ALLOWLIST_BATCH = 32;
 export const MAX_FUND_BATCH = 50;
+export const MAX_INVESTOR_HISTORY_ENTRIES = 128;
+export const MAX_HISTORY_PAGE_SIZE = 50;
 export const MAX_DUST_SWEEP_AMOUNT = "100000000";
 
 // ---------------------------------------------------------------------------
@@ -150,14 +311,16 @@ export enum EscrowErrorCode {
   RecipientBalanceDeltaMismatch = 41,
   SweepExceedsLiabilityFloor = 42,
 
-  // Attestation (50–51)
+  // Attestation (50–52)
   PrimaryAttestationAlreadyBound = 50,
   AttestationAppendLogCapacityReached = 51,
+  InvalidAttestationHashLength = 52,
 
-  // SME collateral (60–62)
+  // SME collateral (60–63)
   CollateralAmountNotPositive = 60,
   CollateralAssetEmpty = 61,
   CollateralTimestampBackwards = 62,
+  CollateralUpdateAfterSettlement = 63,
 
   // Admin validation (70–83)
   InvestorBatchEmpty = 70,
@@ -215,13 +378,38 @@ export enum EscrowErrorCode {
   LegalHoldClearRequestMissing = 150,
   LegalHoldClearNotReady = 151,
   LegalHoldClearDelayOverflow = 152,
+  LegalHoldRequiresGuardianConfirmation = 207,
+  LegalHoldProposalMissing = 208,
+  LegalHoldProposalExpired = 209,
+  LegalHoldAuthorityMismatch = 210,
+  LegalHoldGuardianNotConfigured = 211,
+  LegalHoldAlreadyActive = 212,
+  LegalHoldGuardianSameAsAdmin = 213,
 
   // Beneficiary rotation + admin handover + funding deadline (160–164)
   LegalHoldBlocksBeneficiaryRotation = 160,
   RotationNotOpen = 161,
   NewSmeSameAsCurrent = 162,
   NoPendingAdmin = 163,
-  FundingDeadlinePassed = 164,
+  InsufficientContractBalance = 164,
+
+  // Dispute pause + governance / role checks (165–180)
+  DisputePausedBlocksFunding = 165,
+  DisputePausedBlocksSettlement = 166,
+  DisputePausedBlocksWithdrawal = 167,
+  DisputePausedBlocksInvestorClaims = 168,
+  DisputePauseDurationNotPositive = 169,
+  DisputeTicketIdEmpty = 170,
+  NoPauseActive = 171,
+  LedgerTimestampOverflow = 172,
+  InvestorNotVerified = 173,
+  InsufficientAdminRole = 174,
+  InvalidAdminRoleList = 175,
+  MultisigThresholdInvalid = 176,
+  MultisigSignerListInvalid = 177,
+  MultisigOperationsListEmpty = 178,
+  MultisigInsufficientSigners = 179,
+  MultisigSignerNotAuthorized = 180,
 }
 
 /** Human-readable error descriptions keyed by error code. */
@@ -257,9 +445,11 @@ export const ESCROW_ERROR_LABELS: Record<number, string> = {
   42: "Sweep would exceed liability floor",
   50: "Primary attestation already bound",
   51: "Attestation append log capacity reached",
+  52: "Attestation hash must be exactly 32 bytes",
   60: "Collateral amount must be positive",
   61: "Collateral asset symbol must not be empty",
   62: "Collateral timestamp must not go backward",
+  63: "Collateral updates are blocked after settlement",
   70: "Investor batch must be non-empty",
   71: "Investor batch too large",
   72: "Target must be strictly positive",
@@ -305,11 +495,34 @@ export const ESCROW_ERROR_LABELS: Record<number, string> = {
   150: "Legal hold clear request missing",
   151: "Legal hold clear delay not elapsed",
   152: "Legal hold clear delay overflow",
+  207: "Guardian confirmation required to activate legal hold",
+  208: "No pending legal-hold proposal",
+  209: "Legal-hold proposal expired",
+  210: "Legal-hold admin or guardian authority mismatch",
+  211: "No legal-hold guardian configured",
+  212: "Legal hold is already active",
+  213: "Legal-hold guardian must differ from admin",
   160: "Legal hold blocks beneficiary rotation",
   161: "Beneficiary rotation not permitted in current state",
   162: "New SME must differ from current beneficiary",
   163: "No pending admin",
-  164: "Funding deadline has passed",
+  164: "Contract funding token balance is below funded amount",
+  165: "Dispute pause blocks new funding",
+  166: "Dispute pause blocks settlement",
+  167: "Dispute pause blocks withdrawal",
+  168: "Dispute pause blocks investor claims",
+  169: "Dispute pause duration must be positive",
+  170: "Dispute ticket ID must not be empty",
+  171: "No dispute pause is active",
+  172: "Ledger timestamp overflow",
+  173: "Investor is not verified by the KYC provider",
+  174: "Caller does not have the required admin role",
+  175: "Admin role list is empty, oversized, or contains duplicates",
+  176: "Multisig threshold is invalid",
+  177: "Multisig signer list is invalid",
+  178: "Multisig operations list must not be empty",
+  179: "Multisig signers do not meet the threshold",
+  180: "Signer is not authorized for this multisig policy",
 };
 
 /** Category groupings for error codes to help SDK consumers branch on categories. */
@@ -325,7 +538,10 @@ export const ESCROW_ERROR_CATEGORIES: Record<string, { range: [number, number]; 
   settlement: { range: [120, 129], label: "Settlement / payout failure" },
   cancelRefund: { range: [140, 143], label: "Cancel / refund failure" },
   legalHoldClear: { range: [150, 152], label: "Legal hold clear workflow failure" },
+  legalHoldActivation: { range: [207, 213], label: "Legal hold activation failure" },
   beneficiary: { range: [160, 164], label: "Beneficiary / admin / deadline failure" },
+  dispute: { range: [165, 172], label: "Dispute pause / ledger safety failure" },
+  governance: { range: [173, 180], label: "KYC / role / multisig governance failure" },
 };
 
 /**
@@ -364,7 +580,15 @@ export interface InitParams {
   legal_hold_clear_delay: string | null;
   funding_deadline: string | null;
   yield_slippage_threshold: string | null;
+  max_funding_rate?: string | null;
+  settlement_notifier_contract?: string | null;
+  kyc_provider_contract?: string | null;
+  admin_roles?: Array<[string, AdminRole]> | null;
+  reject_contract_admin?: boolean | null;
 }
+
+/** Administrative capability assigned in optional initialization role lists. */
+export type AdminRole = "AuditOnly" | "SettlementOnly" | "Full";
 
 /**
  * Utility to compute a Stellar base-unit amount from a human-readable decimal.
@@ -430,3 +654,29 @@ export function parseResult<T>(
     };
   }
 }
+
+// ---------------------------------------------------------------------------
+// Health check types and utilities
+// ---------------------------------------------------------------------------
+
+/**
+ * Health check warning type constants for easy comparison.
+ */
+export const HEALTH_CHECK_WARNINGS = {
+  HEALTHY: "healthy",
+  UNDERFUNDED: "underfunded",
+  APPROACHING_MATURITY: "approaching_maturity",
+  MATURITY_PASSED: "maturity_passed",
+  LEGAL_HOLD: "legal_hold",
+} as const;
+
+/**
+ * Human-readable descriptions for each warning type.
+ */
+export const HEALTH_CHECK_WARNING_LABELS: Record<string, string> = {
+  healthy: "Escrow is healthy with sufficient funding and time",
+  underfunded: "Escrow is underfunded relative to target",
+  approaching_maturity: "Escrow is approaching maturity deadline",
+  maturity_passed: "Escrow maturity has passed or is overdue",
+  legal_hold: "Escrow is under legal hold",
+};

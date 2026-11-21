@@ -8,9 +8,10 @@
 )]
 #[allow(unused_imports)]
 use super::{
-    AttestationDigestRevoked, CollateralRecordedEvt, DataKey, EscrowError, EscrowFunded,
-    EscrowInitialized, FundingTargetUpdated, LiquifactEscrow, LiquifactEscrowClient,
-    MaxUniqueInvestorsCapLowered, YieldClaimDelegationRevoked, YieldClaimDelegationSet, YieldTier,
+    AttestationBoundEvt, AttestationDigestRevoked, CollateralRecordedEvt, ContractLimits, DataKey,
+    EscrowError, EscrowFunded, EscrowInitialized, FundingTargetUpdated, LiquifactEscrow,
+    LiquifactEscrowClient, MaxUniqueInvestorsCapLowered, YieldClaimDelegationRevoked,
+    YieldClaimDelegationSet, YieldTier, LEGAL_HOLD_PROPOSAL_TTL_SECS,
     MAX_ATTESTATION_APPEND_ENTRIES, MAX_DUST_SWEEP_AMOUNT, MAX_FUND_BATCH, SCHEMA_VERSION,
 };
 use soroban_sdk::{
@@ -51,9 +52,10 @@ mod coverage;
 mod dos_analysis;
 mod external_calls;
 mod external_calls_mocked;
-mod validation;
 mod funding;
+mod get_limits;
 mod health_and_events;
+mod history_pagination;
 mod init;
 mod integration;
 mod legal_hold;
@@ -61,9 +63,12 @@ mod properties;
 mod properties_funding;
 mod secure_rng;
 mod settlement;
+mod tier_base_yield;
 mod tokenomics;
 mod upgrade_compat;
+mod validation;
 mod yield_distribution;
+mod yield_tier_table_read;
 
 /// Registers a new escrow contract instance and returns its contract id.
 pub fn deploy_id(env: &Env) -> Address {
@@ -138,6 +143,164 @@ pub fn default_init(client: &LiquifactEscrowClient<'_>, env: &Env, admin: &Addre
         &token,
         &None,
         &treasury,
+
+/// Test: Verify that all EscrowError variants have unique discriminant codes.
+///
+/// This test iterates through all known EscrowError variants and asserts that
+/// no two variants share the same numeric discriminant. This is a compile-time
+/// invariant that is checked at runtime for safety.
+///
+/// **Rationale:** Rust's `#[contracterror]` macro does not prevent duplicate
+/// discriminants in the enum definition (E0081 is raised by rustc, not by the macro).
+/// This test makes the uniqueness requirement explicit and catches any future
+/// regressions if variants are accidentally re-assigned to the same code.
+#[test]
+fn test_escrow_error_codes_are_unique() {
+    // Create a set of all error codes by converting each variant to its numeric value.
+    // This list must be kept in sync with all EscrowError variants; if you add a new
+    // variant, add its code here as well.
+    let error_codes = vec![
+        // Init-time errors (1-13)
+        EscrowError::AmountMustBePositive as u32,
+        EscrowError::YieldBpsOutOfRange as u32,
+        EscrowError::EscrowAlreadyInitialized as u32,
+        EscrowError::InvoiceIdInvalidLength as u32,
+        EscrowError::InvoiceIdInvalidCharset as u32,
+        EscrowError::MinContributionNotPositive as u32,
+        EscrowError::MinContributionExceedsAmount as u32,
+        EscrowError::MaxUniqueInvestorsNotPositive as u32,
+        EscrowError::MaxPerInvestorNotPositive as u32,
+        EscrowError::TierYieldOutOfRange as u32,
+        EscrowError::TierYieldBelowBase as u32,
+        EscrowError::TierLockNotIncreasing as u32,
+        EscrowError::TierYieldNotNonDecreasing as u32,
+        // Init state checks (20-22)
+        EscrowError::EscrowNotInitialized as u32,
+        EscrowError::FundingTokenNotSet as u32,
+        EscrowError::TreasuryNotSet as u32,
+        // Sweep/dust errors (30-42)
+        EscrowError::LegalHoldBlocksTreasuryDustSweep as u32,
+        EscrowError::SweepAmountNotPositive as u32,
+        EscrowError::SweepAmountExceedsMax as u32,
+        EscrowError::DustSweepNotTerminal as u32,
+        EscrowError::NoFundingTokenBalanceToSweep as u32,
+        EscrowError::EffectiveSweepAmountZero as u32,
+        EscrowError::TransferAmountNotPositive as u32,
+        EscrowError::InsufficientTokenBalanceBeforeTransfer as u32,
+        EscrowError::SenderBalanceUnderflow as u32,
+        EscrowError::RecipientBalanceUnderflow as u32,
+        EscrowError::SenderBalanceDeltaMismatch as u32,
+        EscrowError::RecipientBalanceDeltaMismatch as u32,
+        EscrowError::SweepExceedsLiabilityFloor as u32,
+        // Attestation errors (50-52)
+        EscrowError::PrimaryAttestationAlreadyBound as u32,
+        EscrowError::AttestationAppendLogCapacityReached as u32,
+        EscrowError::InvalidAttestationHashLength as u32,
+        // Collateral errors (60-63)
+        EscrowError::CollateralAmountNotPositive as u32,
+        EscrowError::CollateralAssetEmpty as u32,
+        EscrowError::CollateralTimestampBackwards as u32,
+        EscrowError::CollateralUpdateAfterSettlement as u32,
+        // Allowlist/batch/cap errors (70-83)
+        EscrowError::InvestorBatchEmpty as u32,
+        EscrowError::InvestorBatchTooLarge as u32,
+        EscrowError::FundingBatchEmpty as u32,
+        EscrowError::FundingBatchTooLarge as u32,
+        EscrowError::TargetNotPositive as u32,
+        EscrowError::TargetUpdateNotOpen as u32,
+        EscrowError::TargetBelowFundedAmount as u32,
+        EscrowError::CapLowerNotOpen as u32,
+        EscrowError::NoInvestorCapConfigured as u32,
+        EscrowError::NewCapNotLower as u32,
+        EscrowError::NewCapBelowCurrentFunderCount as u32,
+        EscrowError::MaturityUpdateNotOpen as u32,
+        EscrowError::NewAdminSameAsCurrent as u32,
+        // Migration errors (90-92)
+        EscrowError::MigrationVersionMismatch as u32,
+        EscrowError::AlreadyCurrentSchemaVersion as u32,
+        EscrowError::NoMigrationPath as u32,
+        // Funding errors (100-111)
+        EscrowError::FundingAmountNotPositive as u32,
+        EscrowError::FundingBelowMinContribution as u32,
+        EscrowError::LegalHoldBlocksFunding as u32,
+        EscrowError::EscrowNotOpenForFunding as u32,
+        EscrowError::InvestorNotAllowlisted as u32,
+        EscrowError::InvestorContributionOverflow as u32,
+        EscrowError::InvestorContributionExceedsCap as u32,
+        EscrowError::UniqueInvestorCapReached as u32,
+        EscrowError::TieredSecondDeposit as u32,
+        EscrowError::InvestorClaimTimeOverflow as u32,
+        EscrowError::FundedAmountOverflow as u32,
+        EscrowError::CommitmentLockExceedsMaturity as u32,
+        // Settlement/withdrawal/claim errors (120-129)
+        EscrowError::LegalHoldBlocksSettlement as u32,
+        EscrowError::SettlementNotFunded as u32,
+        EscrowError::MaturityNotReached as u32,
+        EscrowError::LegalHoldBlocksWithdrawal as u32,
+        EscrowError::WithdrawalNotFunded as u32,
+        EscrowError::LegalHoldBlocksInvestorClaims as u32,
+        EscrowError::NoContributionToClaim as u32,
+        EscrowError::InvestorClaimNotSettled as u32,
+        EscrowError::InvestorCommitmentLockNotExpired as u32,
+        EscrowError::ComputePayoutArithmeticOverflow as u32,
+        // Cancellation/refund errors (140-143)
+        EscrowError::LegalHoldBlocksCancelFunding as u32,
+        EscrowError::CancelFundingNotOpen as u32,
+        EscrowError::RefundNotCancelled as u32,
+        EscrowError::NoContributionToRefund as u32,
+        // Legal hold clearance errors (150-152)
+        EscrowError::LegalHoldClearRequestMissing as u32,
+        EscrowError::LegalHoldClearNotReady as u32,
+        EscrowError::LegalHoldClearDelayOverflow as u32,
+        // Beneficiary rotation and yield slippage errors (160-163)
+        EscrowError::LegalHoldBlocksBeneficiaryRotation as u32,
+        EscrowError::RotationNotOpen as u32,
+        EscrowError::YieldSlippageDetected as u32,
+        EscrowError::YieldSlippageThresholdOutOfRange as u32,
+        // Funding deadline and admin errors (164, 181-182)
+        EscrowError::FundingDeadlinePassed as u32,
+        EscrowError::NewSmeSameAsCurrent as u32,
+        EscrowError::NoPendingAdmin as u32,
+        EscrowError::InsufficientContractBalance as u32,
+        // Dispute pause errors (165-172)
+        EscrowError::DisputePausedBlocksFunding as u32,
+        EscrowError::DisputePausedBlocksSettlement as u32,
+        EscrowError::DisputePausedBlocksWithdrawal as u32,
+        EscrowError::DisputePausedBlocksInvestorClaims as u32,
+        EscrowError::DisputePauseDurationNotPositive as u32,
+        EscrowError::DisputeTicketIdEmpty as u32,
+        EscrowError::NoPauseActive as u32,
+        EscrowError::LedgerTimestampOverflow as u32,
+        // KYC and role errors (173-175)
+        EscrowError::InvestorNotVerified as u32,
+        EscrowError::InsufficientAdminRole as u32,
+        EscrowError::InvalidAdminRoleList as u32,
+        // Multisig policy errors (176-180)
+        EscrowError::MultisigThresholdInvalid as u32,
+        EscrowError::MultisigSignerListInvalid as u32,
+        EscrowError::MultisigOperationsListEmpty as u32,
+        EscrowError::MultisigInsufficientSigners as u32,
+        EscrowError::MultisigSignerNotAuthorized as u32,
+    ];
+
+    // Check for duplicates by using a set-like structure.
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
+    let mut duplicates = Vec::new();
+
+    for code in &error_codes {
+        if !seen.insert(code) {
+            duplicates.push(code);
+        }
+    }
+
+    // Assert no duplicates exist.
+    assert!(
+        duplicates.is_empty(),
+        "Found duplicate EscrowError discriminants: {:?}",
+        duplicates
+    );
+}
         &None,
         &None,
         &None,
@@ -191,7 +354,8 @@ pub fn init_and_fund_with_real_token<'a>(
         &None,
         &None,
         &None,
-        &None,        &None,
+        &None,
+        &None,
         &None,
         &None,
         &None,

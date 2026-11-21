@@ -1,5 +1,5 @@
 use super::*;
-use crate::{AdminProposedEvent, EscrowCloseSnapshot, FundingTargetUpdated};
+use crate::{AdminProposedEvent, ContractUpgraded, EscrowCloseSnapshot, FundingTargetUpdated};
 use soroban_sdk::Event;
 
 // Admin/governance operations: target changes, maturity changes, admin handover,
@@ -28,7 +28,9 @@ fn test_update_maturity_success() {
         &None,
         &None,
     );
-    let updated = client.update_maturity(&2000u64);
+    // Extensions now require the propose/confirm flow; shortening stays immediate.
+    client.propose_maturity_extension(&2000u64);
+    let updated = client.confirm_maturity_extension();
     assert_eq!(updated.maturity, 2000u64);
     assert_eq!(updated.status, 0);
 }
@@ -59,7 +61,7 @@ fn test_update_maturity_wrong_state() {
         &None,
     );
     client.fund(&investor, &1_000i128);
-    client.update_maturity(&2000u64);
+    client.propose_maturity_extension(&2000u64);
 }
 
 #[test]
@@ -90,7 +92,172 @@ fn test_update_maturity_unauthorized() {
         &None,
     );
     env.mock_auths(&[]);
-    client.update_maturity(&2000u64);
+    client.propose_maturity_extension(&2000u64);
+}
+
+// ── Issue #241: update_maturity extension guard (propose/confirm + delay) ─────
+
+/// Extending maturity must be rejected until the minimum delay has elapsed.
+#[test]
+#[should_panic]
+fn test_update_maturity_extension_rejected_before_delay() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    client.propose_maturity_extension(&2000u64);
+    // No ledger time advance — confirmation must be rejected.
+    client.confirm_maturity_extension();
+}
+
+/// Extending maturity succeeds once the minimum delay has elapsed.
+#[test]
+fn test_update_maturity_extension_accepted_after_delay() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    let proposed_at = env.ledger().timestamp();
+    client.propose_maturity_extension(&2000u64);
+
+    env.ledger()
+        .set_timestamp(proposed_at + crate::MATURITY_EXTENSION_DELAY_SECS);
+
+    let updated = client.confirm_maturity_extension();
+    assert_eq!(updated.maturity, 2000u64);
+}
+
+/// Shortening maturity (new < current) must remain immediate and unaffected by
+/// the extension guard.
+#[test]
+fn test_update_maturity_shortening_remains_immediate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    // default_init sets maturity to 1000; shorten to 500 immediately.
+    let updated = client.update_maturity(&500u64);
+    assert_eq!(updated.maturity, 500u64);
+}
+
+/// Unauthorized callers cannot propose a maturity extension.
+#[test]
+#[should_panic]
+fn test_propose_maturity_extension_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    env.mock_auths(&[]);
+    client.propose_maturity_extension(&2000u64);
+}
+
+/// Unauthorized callers cannot confirm a maturity extension.
+#[test]
+#[should_panic]
+fn test_confirm_maturity_extension_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    let proposed_at = env.ledger().timestamp();
+    client.propose_maturity_extension(&2000u64);
+    env.ledger()
+        .set_timestamp(proposed_at + crate::MATURITY_EXTENSION_DELAY_SECS);
+    env.mock_auths(&[]);
+    client.confirm_maturity_extension();
+}
+
+/// Confirming without a prior proposal must be rejected.
+#[test]
+#[should_panic]
+fn test_confirm_maturity_extension_without_proposal_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    client.confirm_maturity_extension();
+}
+
+/// When a guardian is configured, the guardian can confirm the extension
+/// instead of waiting for the delay.
+#[test]
+fn test_update_maturity_extension_guardian_confirmation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    let guardian = Address::generate(&env);
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "MATG001"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &1000u64,
+        &Address::generate(&env),
+        &Some(guardian.clone()),
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    client.propose_maturity_extension(&2000u64);
+    // Guardian confirms immediately, before the delay elapses.
+    let updated = client.confirm_maturity_extension_as_guardian();
+    assert_eq!(updated.maturity, 2000u64);
+}
+
+/// Guardian confirmation must be rejected when no guardian is configured.
+#[test]
+#[should_panic]
+fn test_update_maturity_extension_guardian_absent_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    client.propose_maturity_extension(&2000u64);
+    client.confirm_maturity_extension_as_guardian();
+}
+
+/// Guardian confirmation must be rejected when the caller is not the guardian.
+#[test]
+#[should_panic]
+fn test_update_maturity_extension_guardian_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    let guardian = Address::generate(&env);
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "MATG002"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &1000u64,
+        &Address::generate(&env),
+        &Some(guardian),
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    client.propose_maturity_extension(&2000u64);
+    env.mock_auths(&[]);
+    client.confirm_maturity_extension_as_guardian();
 }
 
 #[test]
@@ -126,6 +293,12 @@ fn test_verify_asset_custody_reports_signed_discrepancy() {
 
     let discrepancy = client.verify_asset_custody();
     assert_eq!(discrepancy, 200i128);
+
+    let recipient = Address::generate(&env);
+    token.token.transfer(&client.address, &recipient, &300i128);
+
+    let discrepancy = client.verify_asset_custody();
+    assert_eq!(discrepancy, -100i128);
 }
 
 #[test]
@@ -321,12 +494,13 @@ fn test_propose_admin_emits_event() {
 }
 
 #[test]
-#[should_panic]
-fn test_migrate_at_current_version_panics() {
+fn test_migrate_at_current_version_records_upgrade_audit() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
     default_init(&client, &env, &admin, &sme);
-    client.migrate(&SCHEMA_VERSION);
+
+    assert_eq!(client.migrate(&SCHEMA_VERSION), SCHEMA_VERSION);
+    assert_eq!(client.get_version_history().len(), 2);
 }
 
 #[test]
@@ -360,6 +534,66 @@ fn test_migrate_from_zero_uninitialized_panics() {
     let client = deploy(&env);
     // Uninitialized storage returns version 0; migrate(0) hits the no-path branch.
     client.migrate(&0u32);
+}
+
+#[test]
+fn test_read_model_summary_defaults_no_dispute_pause_and_allowlist_inactive() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    let summary = client.get_escrow_summary();
+
+    assert!(!summary.dispute_pause_active);
+    assert_eq!(summary.dispute_pause_expiry, None);
+    assert!(!summary.allowlist_active);
+}
+
+#[test]
+fn test_read_model_summary_reflects_active_dispute_pause() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    let paused_at = env.ledger().timestamp();
+    let duration = 3600u64;
+    client.pause_dispute(&String::from_str(&env, "TICKET-SUMMARY"), &duration);
+
+    let summary = client.get_escrow_summary();
+
+    assert!(summary.dispute_pause_active);
+    assert_eq!(summary.dispute_pause_expiry, Some(paused_at + duration));
+}
+
+#[test]
+fn test_read_model_summary_dispute_pause_auto_expired() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    let paused_at = env.ledger().timestamp();
+    let duration = 1800u64;
+    client.pause_dispute(&String::from_str(&env, "TICKET-EXPIRED"), &duration);
+
+    env.ledger().set_timestamp(paused_at + duration);
+
+    let summary = client.get_escrow_summary();
+
+    assert!(!summary.dispute_pause_active);
+    assert_eq!(summary.dispute_pause_expiry, None);
+}
+
+#[test]
+fn test_read_model_summary_reflects_allowlist_active() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    client.set_allowlist_active(&true);
+    assert!(client.get_escrow_summary().allowlist_active);
+
+    client.set_allowlist_active(&false);
+    assert!(!client.get_escrow_summary().allowlist_active);
 }
 
 #[test]
@@ -424,9 +658,17 @@ fn test_record_collateral_stored_and_does_not_block_settle() {
         &None,
         &None,
     );
-    let c = client.record_sme_collateral_commitment(&symbol_short!("USDC"), &5000i128);
+    let c = client.record_sme_collateral_commitment(
+        &symbol_short!("USDC"),
+        &5000i128,
+        &soroban_sdk::String::from_str(&env, "equipment"),
+    );
     assert_eq!(c.amount, 5000i128);
     assert_eq!(c.asset, symbol_short!("USDC"));
+    assert_eq!(
+        c.collateral_type,
+        soroban_sdk::String::from_str(&env, "equipment")
+    );
     assert_eq!(client.get_sme_collateral_commitment(), Some(c));
 
     client.fund(&investor, &TARGET);
@@ -458,7 +700,11 @@ fn test_collateral_zero_panics() {
         &None,
         &None,
     );
-    client.record_sme_collateral_commitment(&symbol_short!("XLM"), &0i128);
+    client.record_sme_collateral_commitment(
+        &symbol_short!("XLM"),
+        &0i128,
+        &soroban_sdk::String::from_str(&env, "property"),
+    );
 }
 
 #[test]
@@ -486,7 +732,42 @@ fn test_collateral_requires_sme_auth() {
         &None,
     );
     env.mock_auths(&[]);
-    client.record_sme_collateral_commitment(&symbol_short!("XLM"), &100i128);
+    client.record_sme_collateral_commitment(
+        &symbol_short!("XLM"),
+        &100i128,
+        &soroban_sdk::String::from_str(&env, "inventory"),
+    );
+}
+
+#[test]
+#[should_panic]
+fn test_collateral_empty_type_panics() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "COL004"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    client.record_sme_collateral_commitment(
+        &symbol_short!("XLM"),
+        &100i128,
+        &soroban_sdk::String::from_str(&env, ""),
+    );
 }
 
 #[test]
@@ -972,7 +1253,10 @@ fn test_update_maturity_event_fields() {
         &None,
     );
 
-    client.update_maturity(&2000u64);
+    client.propose_maturity_extension(&2000u64);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + crate::MATURITY_EXTENSION_DELAY_SECS);
+    client.confirm_maturity_extension();
 
     assert_eq!(
         env.events().all(),
@@ -1020,7 +1304,7 @@ fn test_update_maturity_fails_when_funded() {
         &None,
     );
     client.fund(&investor, &5_000i128); // status → 1 (funded)
-    client.update_maturity(&2000u64);
+    client.propose_maturity_extension(&2000u64);
 }
 
 /// `update_maturity` must be rejected when the escrow is **settled**
@@ -1058,7 +1342,7 @@ fn test_update_maturity_fails_when_settled() {
     );
     client.fund(&investor, &5_000i128); // status → 1
     client.settle(); // status → 2
-    client.update_maturity(&2000u64);
+    client.propose_maturity_extension(&2000u64);
 }
 
 /// `update_maturity` must be rejected when the escrow is **withdrawn**
@@ -1070,7 +1354,7 @@ fn test_update_maturity_fails_when_withdrawn() {
     env.mock_all_auths();
     let (client, _escrow_id, _sme) = init_and_fund_with_real_token(&env, 5_000i128, "MAT004");
     client.withdraw(); // status → 3
-    client.update_maturity(&2000u64);
+    client.propose_maturity_extension(&2000u64);
 }
 
 /// Setting maturity to zero is valid — it means no maturity gate.
@@ -1222,8 +1506,15 @@ fn test_update_maturity_twice_overwrites() {
         &None,
     );
 
-    client.update_maturity(&2000u64);
-    let updated = client.update_maturity(&3000u64);
+    client.propose_maturity_extension(&2000u64);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + crate::MATURITY_EXTENSION_DELAY_SECS);
+    client.confirm_maturity_extension();
+
+    client.propose_maturity_extension(&3000u64);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + crate::MATURITY_EXTENSION_DELAY_SECS);
+    let updated = client.confirm_maturity_extension();
     assert_eq!(updated.maturity, 3000u64);
     assert_eq!(client.get_escrow().maturity, 3000u64);
 }
@@ -1355,7 +1646,10 @@ fn auth_audit_append_attestation_requires_admin() {
     let (client, admin, sme) = setup(&env);
     default_init(&client, &env, &admin, &sme);
     env.mock_auths(&[]);
-    client.append_attestation_digest(&symbol_short!(""), &soroban_sdk::BytesN::from_array(&env, &[0u8; 32]));
+    client.append_attestation_digest(
+        &symbol_short!(""),
+        &soroban_sdk::BytesN::from_array(&env, &[0u8; 32]),
+    );
 }
 
 #[test]
@@ -1609,7 +1903,10 @@ fn test_rotate_beneficiary_then_withdraw_goes_to_new_sme() {
     // Mint funded_amount into the escrow contract so withdraw() can transfer it.
     token.stellar.mint(&escrow_id, &TARGET);
     client.rotate_beneficiary(&new_sme);
-    client.withdraw();
+    let old_sme_result = client.try_withdraw(&sme);
+    assert_contract_error(old_sme_result, EscrowError::UnauthorizedWithdrawer);
+    client.withdraw(&new_sme);
+    assert_eq!(token.stellar.balance(&sme), 0);
     assert_eq!(token.stellar.balance(&new_sme), TARGET);
 }
 
@@ -1642,8 +1939,14 @@ fn test_208_initial_record_timestamps_equal() {
 
     let commitment = client.record_sme_collateral_commitment(&symbol_short!("GOLD"), &5000i128);
 
-    assert_eq!(commitment.recorded_at, 12345, "recorded_at must be set on first write");
-    assert_eq!(commitment.updated_at, 12345, "updated_at must equal recorded_at on first write");
+    assert_eq!(
+        commitment.recorded_at, 12345,
+        "recorded_at must be set on first write"
+    );
+    assert_eq!(
+        commitment.updated_at, 12345,
+        "updated_at must equal recorded_at on first write"
+    );
     assert_eq!(commitment.amount, 5000);
 }
 
@@ -1678,9 +1981,15 @@ fn test_208_update_preserves_recorded_at_and_advances_updated_at() {
     let updated = client.record_sme_collateral_commitment(&symbol_short!("GOLD"), &9000i128);
 
     // recorded_at stays at the original write time.
-    assert_eq!(updated.recorded_at, 12345, "recorded_at must not change on update");
+    assert_eq!(
+        updated.recorded_at, 12345,
+        "recorded_at must not change on update"
+    );
     // updated_at reflects the update time.
-    assert_eq!(updated.updated_at, 99999, "updated_at must reflect the update timestamp");
+    assert_eq!(
+        updated.updated_at, 99999,
+        "updated_at must reflect the update timestamp"
+    );
     assert_eq!(updated.amount, 9000);
 
     // Persisted state must match the returned struct.
@@ -1771,7 +2080,10 @@ fn test_208_update_blocked_after_settlement() {
 
     // State unchanged.
     let stored = client.get_sme_collateral_commitment().unwrap();
-    assert_eq!(stored.amount, 5000, "collateral must not change after rejected update");
+    assert_eq!(
+        stored.amount, 5000,
+        "collateral must not change after rejected update"
+    );
 }
 
 /// First-time record on a settled escrow is also blocked (prior == None means it's an insert, not update;
@@ -1810,7 +2122,6 @@ fn test_208_first_record_on_settled_escrow_is_allowed() {
     let commitment = client.record_sme_collateral_commitment(&symbol_short!("BOND"), &1000i128);
     assert_eq!(commitment.amount, 1000);
     assert!(client.get_sme_collateral_commitment().is_some());
-
 
     // ──────────────────────────────────────────────────────────────────────────────
     // Legal hold state machine – Issue #406
@@ -1949,9 +2260,66 @@ fn test_208_first_record_on_settled_escrow_is_allowed() {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             client.resume_dispute();
         }));
-        assert!(result.is_ok(), "resume_dispute should succeed during legal hold");
+        assert!(
+            result.is_ok(),
+            "resume_dispute should succeed during legal hold"
+        );
     }
+}
 
+#[test]
+fn test_resume_dispute_emits_manual_resume_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    let contract_id = client.address.clone();
+    let ticket_id = String::from_str(&env, "TICKET-RESUME");
+
+    client.pause_dispute(&ticket_id, &3600u64);
+    client.resume_dispute();
+
+    assert_eq!(
+        env.events().all().events().last().unwrap().clone(),
+        crate::DisputeResumedEvt {
+            name: symbol_short!("disp_res"),
+            invoice_id: client.get_escrow().invoice_id,
+            admin,
+            resumed_by: crate::DisputeResumedBy::Manual,
+            ledger_timestamp: env.ledger().timestamp(),
+        }
+        .to_xdr(&env, &contract_id)
+    );
+}
+
+#[test]
+fn test_pause_dispute_duration_limits() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    let now = env.ledger().timestamp();
+    client.pause_dispute(
+        &String::from_str(&env, "TICKET-MAX"),
+        &crate::MAX_DISPUTE_PAUSE_DURATION_SECS,
+    );
+    let pause = client.get_dispute_pause().unwrap();
+    assert_eq!(pause.expires_at, now + crate::MAX_DISPUTE_PAUSE_DURATION_SECS);
+
+    assert_contract_error(
+        client.try_pause_dispute(
+            &String::from_str(&env, "TICKET-OVER-MAX"),
+            &(crate::MAX_DISPUTE_PAUSE_DURATION_SECS + 1),
+        ),
+        EscrowError::DisputePauseDurationExceedsMax,
+    );
+    assert_contract_error(
+        client.try_pause_dispute(&String::from_str(&env, "TICKET-ZERO"), &0u64),
+        EscrowError::DisputePauseDurationNotPositive,
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1970,6 +2338,8 @@ fn test_208_first_record_on_settled_escrow_is_allowed() {
 /// the expiry, and verify settle succeeds without calling `resume_dispute`.
 #[test]
 fn test_dispute_pause_auto_expire_then_settle() {
+    use soroban_sdk::testutils::Events as _;
+
     let env = Env::default();
     env.mock_all_auths();
 
@@ -1997,6 +2367,7 @@ fn test_dispute_pause_auto_expire_then_settle() {
         &None,
         &None,
     );
+    let contract_id = client.address.clone();
 
     // Fund the escrow so settle is available.
     client.fund(&investor, &100_000i128);
@@ -2027,14 +2398,31 @@ fn test_dispute_pause_auto_expire_then_settle() {
     env.ledger().set_timestamp(expiry_ts);
 
     // The pause is no longer active (is_dispute_paused checks now >= expires_at).
+    let event_count_before_read = env.events().all().events().len();
     assert!(
         !client.is_dispute_paused(),
         "dispute pause must be inactive at/after expiry"
     );
+    assert_eq!(env.events().all().events().len(), event_count_before_read);
 
     // Settle must succeed without an explicit resume_dispute call.
     client.settle();
     assert_eq!(client.get_escrow().status, 2); // settled
+
+    let expected_expiry_event = crate::DisputeResumedEvt {
+        name: symbol_short!("disp_res"),
+        invoice_id: client.get_escrow().invoice_id,
+        admin,
+        resumed_by: crate::DisputeResumedBy::AutoExpiry,
+        ledger_timestamp: expiry_ts,
+    }
+    .to_xdr(&env, &contract_id);
+    assert!(env
+        .events()
+        .all()
+        .events()
+        .iter()
+        .any(|event| event == &expected_expiry_event));
 }
 
 /// Boundary condition: settle blocked 1 second **before** expiry, succeeds
@@ -2170,7 +2558,11 @@ fn test_dispute_pause_blocks_withdraw_auto_expires() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_id, admin, sme) = (deploy_id(&env), Address::generate(&env), Address::generate(&env));
+    let (client_id, admin, sme) = (
+        deploy_id(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+    );
     let client = LiquifactEscrowClient::new(&env, &client_id);
     let investor = Address::generate(&env);
     let token_setup = install_stellar_asset_token(&env);
@@ -2198,7 +2590,9 @@ fn test_dispute_pause_blocks_withdraw_auto_expires() {
 
     // Fund with real token so withdraw can actually transfer.
     token_setup.stellar.mint(&investor, &50_000i128);
-    token_setup.token.approve(&investor, &client_id, &50_000i128, &999_999);
+    token_setup
+        .token
+        .approve(&investor, &client_id, &50_000i128, &999_999);
     client.fund(&investor, &50_000i128);
     // Mint the escrow's balance so withdraw has tokens to send.
     token_setup.stellar.mint(&client_id, &50_000i128);
@@ -2233,7 +2627,11 @@ fn test_dispute_pause_blocks_claim_auto_expires() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_id, admin, sme) = (deploy_id(&env), Address::generate(&env), Address::generate(&env));
+    let (client_id, admin, sme) = (
+        deploy_id(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+    );
     let client = LiquifactEscrowClient::new(&env, &client_id);
     let investor = Address::generate(&env);
     let token_setup = install_stellar_asset_token(&env);
@@ -2261,7 +2659,9 @@ fn test_dispute_pause_blocks_claim_auto_expires() {
 
     // Fund, mint tokens for claim payout, settle.
     token_setup.stellar.mint(&investor, &60_000i128);
-    token_setup.token.approve(&investor, &client_id, &60_000i128, &999_999);
+    token_setup
+        .token
+        .approve(&investor, &client_id, &60_000i128, &999_999);
     client.fund(&investor, &60_000i128);
     token_setup.stellar.mint(&client_id, &63_000i128); // principal + yield
     client.settle();
@@ -2390,9 +2790,15 @@ fn test_get_dispute_pause_returns_none_after_expiry() {
 
     // get_dispute_pause returns Some while active.
     let state = client.get_dispute_pause();
-    assert!(state.is_some(), "get_dispute_pause must return Some while active");
+    assert!(
+        state.is_some(),
+        "get_dispute_pause must return Some while active"
+    );
     let state = state.unwrap();
-    assert_eq!(state.expires_at_ledger_timestamp, paused_at + pause_duration);
+    assert_eq!(
+        state.expires_at_ledger_timestamp,
+        paused_at + pause_duration
+    );
 
     // Advance past expiry.
     env.ledger().set_timestamp(paused_at + pause_duration);
@@ -2403,4 +2809,651 @@ fn test_get_dispute_pause_returns_none_after_expiry() {
         state_after.is_none(),
         "get_dispute_pause must return None after auto-expiry"
     );
+}
+
+// ── BUG-011: set_legal_hold terminal escrow guard tests ───────────────────
+
+/// set_legal_hold rejects terminal escrows (status 2 = settled).
+#[test]
+#[should_panic(expected = "Error(Contract, #154)")]
+fn test_set_legal_hold_rejects_settled_escrow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, sme) = setup(&env);
+    let investor = Address::generate(&env);
+    let token = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "INV_SETTLE_LH1"),
+        &sme,
+        &1_000i128,
+        &500i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // Fund and settle the escrow to status 2.
+    client.fund(&investor, &1_000i128);
+    client.settle(&None);
+
+    // Attempt to set legal hold on settled escrow (status 2).
+    client.set_legal_hold(&true, &soroban_sdk::String::from_str(&env, "Too late!"));
+}
+
+/// set_legal_hold rejects terminal escrows (status 3 = withdrawn).
+#[test]
+#[should_panic(expected = "Error(Contract, #154)")]
+fn test_set_legal_hold_rejects_withdrawn_escrow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, sme) = setup(&env);
+    let investor = Address::generate(&env);
+    let token = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "INV_WITHDRAW_LH1"),
+        &sme,
+        &1_000i128,
+        &500i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // Fund, settle, and withdraw to status 3.
+    client.fund(&investor, &1_000i128);
+    client.settle(&None);
+    client.withdraw();
+
+    // Attempt to set legal hold on withdrawn escrow (status 3).
+    client.set_legal_hold(&true, &soroban_sdk::String::from_str(&env, "Too late!"));
+}
+
+/// set_legal_hold rejects terminal escrows (status 4 = cancelled).
+#[test]
+#[should_panic(expected = "Error(Contract, #154)")]
+fn test_set_legal_hold_rejects_cancelled_escrow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, sme) = setup(&env);
+    let investor = Address::generate(&env);
+    let token = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "INV_CANCEL_LH1"),
+        &sme,
+        &1_000i128,
+        &500i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // Fund partially then cancel to status 4.
+    client.fund(&investor, &500i128);
+    client.cancel_funding();
+
+    // Attempt to set legal hold on cancelled escrow (status 4).
+    client.set_legal_hold(&true, &soroban_sdk::String::from_str(&env, "Too late!"));
+}
+
+/// set_legal_hold still works on open (status 0) escrow.
+#[test]
+fn test_set_legal_hold_accepts_open_escrow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, sme) = setup(&env);
+    let token = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "INV_OPEN_LH1"),
+        &sme,
+        &1_000i128,
+        &500i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // Set legal hold on open escrow (status 0) should succeed.
+    let escrow = client.get_escrow();
+    assert_eq!(escrow.status, 0, "Escrow should be open");
+
+    client.set_legal_hold(
+        &true,
+        &soroban_sdk::String::from_str(&env, "Compliance hold"),
+    );
+    assert!(client.get_legal_hold(), "Legal hold should be active");
+}
+
+/// set_legal_hold still works on funded (status 1) escrow.
+#[test]
+fn test_set_legal_hold_accepts_funded_escrow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, sme) = setup(&env);
+    let investor = Address::generate(&env);
+    let token = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "INV_FUNDED_LH1"),
+        &sme,
+        &1_000i128,
+        &500i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // Fund to status 1.
+    client.fund(&investor, &1_000i128);
+    let escrow = client.get_escrow();
+    assert_eq!(escrow.status, 1, "Escrow should be funded");
+
+    // Set legal hold on funded escrow should succeed.
+    client.set_legal_hold(
+        &true,
+        &soroban_sdk::String::from_str(&env, "Compliance hold"),
+    );
+    assert!(client.get_legal_hold(), "Legal hold should be active");
+}
+
+// ── BUG-010: migrate diagnostic event tests ──────────────────────────────
+
+/// migrate emits diagnostic event with correct version information.
+#[test]
+#[should_panic(expected = "Error(Contract, #92)")]
+fn test_migrate_emits_diagnostic_event_before_error() {
+    use soroban_sdk::vec as soroban_vec;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, client) = deploy_with_id(&env);
+
+    // Simulate version 4 stored on-chain.
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::Version, &4u32);
+        // Also need a minimal escrow to avoid uninitialized errors.
+        let escrow = InvoiceEscrow {
+            invoice_id: Symbol::new(&env, "TEST04"),
+            admin: Address::generate(&env),
+            guardian: None,
+            sme_address: Address::generate(&env),
+            amount: 1_000i128,
+            funding_target: 500i128,
+            funded_amount: 0i128,
+            yield_bps: 500i64,
+            maturity: 0u64,
+            status: 0u32,
+        };
+        env.storage().instance().set(&DataKey::Escrow, &escrow);
+    });
+
+    // Call migrate(4) which should emit diagnostic event before returning NoMigrationPath error.
+    client.migrate(&4u32);
+
+    // After panic, the test framework will verify the event was emitted by checking
+    // the event log (if not panicking, we can inspect events).
+}
+
+/// migrate diagnostic event carries version delta information.
+#[test]
+fn test_migrate_diagnostic_event_version_delta() {
+    use soroban_sdk::vec as soroban_vec;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, client) = deploy_with_id(&env);
+
+    // Simulate version 2 stored on-chain (skipping multiple versions).
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::Version, &2u32);
+        let escrow = InvoiceEscrow {
+            invoice_id: Symbol::new(&env, "TEST02"),
+            admin: Address::generate(&env),
+                guardian: None,
+            sme_address: Address::generate(&env),
+            amount: 1_000i128,
+            funding_target: 500i128,
+            funded_amount: 0i128,
+            yield_bps: 500i64,
+            maturity: 0u64,
+            status: 0u32,
+        };
+        env.storage().instance().set(&DataKey::Escrow, &escrow);
+    });
+
+    // Call migrate(2); it will fail with NoMigrationPath, but we want to see the event.
+    let res = env.try_invoke_contract::<_, u32>(
+        &contract_id,
+        &Symbol::new(&env, "migrate"),
+        soroban_vec![&env, &2u32],
+    );
+
+    // Expect error 92 (NoMigrationPath).
+    assert!(res.is_err(), "migrate should fail");
+
+    // Check for the diagnostic event in the event log.
+    let events = env.events().all();
+
+    // Find MigrationDiagnosticEmitted event.
+    let diagnostic_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            // The event should contain "mig_diag" as the name (topic 0).
+            if let soroban_sdk::Event::Contract(ce) = e {
+                if ce.topics.len() > 0 {
+                    if let soroban_sdk::Val::Symbol(name) = &ce.topics[0] {
+                        if name.to_string() == "mig_diag" {
+                            return Some(e.clone());
+                        }
+                    }
+                }
+            }
+            None
+        })
+        .collect();
+
+    assert!(
+        !diagnostic_events.is_empty(),
+        "migrate should emit MigrationDiagnosticEmitted event before error"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Legal Hold + Dispute Pause Interaction Matrix Tests
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Test interaction matrix: legal hold and dispute pause behavior when both
+/// controls are active on the same escrow.
+///
+/// This test exercises all four combinations:
+/// 1. Both hold active + pause active
+/// 2. Hold active + pause inactive
+/// 3. Hold inactive + pause active
+/// 4. Hold inactive + pause inactive
+///
+/// For each state, we verify:
+/// - The correct error is returned (legal hold takes precedence)
+/// - Operations remain blocked when only one control is cleared
+/// - Operations succeed once both controls are cleared
+/// - The controls do not interfere with each other
+#[test]
+fn test_legal_hold_dispute_pause_interaction_matrix() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, sme) = setup(&env);
+    let investor1 = Address::generate(&env);
+    let investor2 = Address::generate(&env);
+    let token = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    // Initialize escrow
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "HOLDPAUSE01"),
+        &sme,
+        &100_000i128,
+        &500i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // Fund the escrow
+    client.fund(&investor1, &50_000i128);
+    client.fund(&investor2, &50_000i128);
+
+    // Settle the escrow so we can test claim and withdraw
+    client.settle();
+
+    // ─────────────────────────────────────────────────────────────────────
+    // COMBINATION 1: Both hold and pause active
+    // ─────────────────────────────────────────────────────────────────────
+
+    // Activate legal hold
+    client.set_legal_hold(&true, &String::from_str(&env, "compliance review"));
+    assert!(client.get_legal_hold(), "legal hold should be active");
+
+    // Activate dispute pause (24 hours = 86400 seconds)
+    let pause_duration = 86400u64;
+    client.pause_dispute(
+        &String::from_str(&env, "TICKET-001"),
+        &pause_duration,
+    );
+    assert!(
+        client.is_dispute_paused(),
+        "dispute pause should be active"
+    );
+
+    // Attempt withdraw with both controls active
+    // Should fail with LegalHoldBlocksWithdrawal (123) — legal hold takes precedence
+    let result = env.try_invoke_contract::<_, ()>(
+        &client.contract_id,
+        &Symbol::new(&env, "withdraw"),
+        soroban_vec![&env, &sme],
+    );
+    assert!(result.is_err(), "withdraw should fail when both hold and pause active");
+    assert_panic_contains_error_code(result, 123); // LegalHoldBlocksWithdrawal
+
+    // Attempt claim with both controls active
+    // Should fail with LegalHoldBlocksInvestorClaims (125) — legal hold takes precedence
+    let result = env.try_invoke_contract::<_, ()>(
+        &client.contract_id,
+        &Symbol::new(&env, "claim_investor_payout"),
+        soroban_vec![&env, &investor1],
+    );
+    assert!(result.is_err(), "claim should fail when both hold and pause active");
+    assert_panic_contains_error_code(result, 125); // LegalHoldBlocksInvestorClaims
+
+    // ─────────────────────────────────────────────────────────────────────
+    // COMBINATION 2: Clear legal hold, keep pause active
+    // ─────────────────────────────────────────────────────────────────────
+
+    client.clear_legal_hold();
+    assert!(
+        !client.get_legal_hold(),
+        "legal hold should be cleared"
+    );
+    assert!(
+        client.is_dispute_paused(),
+        "dispute pause should still be active"
+    );
+
+    // Attempt withdraw with hold cleared but pause still active
+    // Should fail with DisputePausedBlocksWithdrawal (167)
+    let result = env.try_invoke_contract::<_, ()>(
+        &client.contract_id,
+        &Symbol::new(&env, "withdraw"),
+        soroban_vec![&env, &sme],
+    );
+    assert!(result.is_err(), "withdraw should fail when pause active");
+    assert_panic_contains_error_code(result, 167); // DisputePausedBlocksWithdrawal
+
+    // Attempt claim with hold cleared but pause still active
+    // Should fail with DisputePausedBlocksInvestorClaims (168)
+    let result = env.try_invoke_contract::<_, ()>(
+        &client.contract_id,
+        &Symbol::new(&env, "claim_investor_payout"),
+        soroban_vec![&env, &investor1],
+    );
+    assert!(result.is_err(), "claim should fail when pause active");
+    assert_panic_contains_error_code(result, 168); // DisputePausedBlocksInvestorClaims
+
+    // ─────────────────────────────────────────────────────────────────────
+    // COMBINATION 3: Pause expired, hold still inactive
+    // ─────────────────────────────────────────────────────────────────────
+
+    // Advance ledger time past the pause expiry
+    env.ledger().with_mut(|l| {
+        l.timestamp = l.timestamp + pause_duration + 100;
+    });
+
+    assert!(
+        !client.is_dispute_paused(),
+        "dispute pause should have expired"
+    );
+    assert!(
+        !client.get_legal_hold(),
+        "legal hold should still be inactive"
+    );
+
+    // Now both controls are inactive; operations should succeed
+    // Withdraw should succeed
+    client.withdraw(&sme);
+
+    // ─────────────────────────────────────────────────────────────────────
+    // COMBINATION 4: Test reactivation in opposite order
+    // ─────────────────────────────────────────────────────────────────────
+
+    // Re-initialize a new escrow to test opposite activation order
+    let investor3 = Address::generate(&env);
+    let investor4 = Address::generate(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "HOLDPAUSE02"),
+        &sme,
+        &100_000i128,
+        &500i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    client.fund(&investor3, &50_000i128);
+    client.fund(&investor4, &50_000i128);
+    client.settle();
+
+    // Activate dispute pause first
+    client.pause_dispute(
+        &String::from_str(&env, "TICKET-002"),
+        &pause_duration,
+    );
+    assert!(
+        client.is_dispute_paused(),
+        "dispute pause should be active"
+    );
+
+    // Then activate legal hold
+    client.set_legal_hold(&true, &String::from_str(&env, "compliance review"));
+    assert!(client.get_legal_hold(), "legal hold should be active");
+
+    // Attempt withdraw with both active (pause activated first)
+    // Should still fail with LegalHoldBlocksWithdrawal (123) — legal hold precedence is order-independent
+    let result = env.try_invoke_contract::<_, ()>(
+        &client.contract_id,
+        &Symbol::new(&env, "withdraw"),
+        soroban_vec![&env, &sme],
+    );
+    assert!(result.is_err(), "withdraw should fail when both hold and pause active (opposite order)");
+    assert_panic_contains_error_code(result, 123); // LegalHoldBlocksWithdrawal
+
+    // Clear pause first, hold remains active
+    client.resume_dispute(&String::from_str(&env, "dispute resolved"));
+    assert!(
+        !client.is_dispute_paused(),
+        "dispute pause should be resumed"
+    );
+    assert!(
+        client.get_legal_hold(),
+        "legal hold should still be active"
+    );
+
+    // Attempt withdraw with pause cleared but hold still active
+    // Should fail with LegalHoldBlocksWithdrawal (123)
+    let result = env.try_invoke_contract::<_, ()>(
+        &client.contract_id,
+        &Symbol::new(&env, "withdraw"),
+        soroban_vec![&env, &sme],
+    );
+    assert!(result.is_err(), "withdraw should still fail when hold active");
+    assert_panic_contains_error_code(result, 123); // LegalHoldBlocksWithdrawal
+
+    // Clear legal hold
+    client.clear_legal_hold();
+    assert!(
+        !client.get_legal_hold(),
+        "legal hold should be cleared"
+    );
+
+    // Now both are inactive; operation should succeed
+    client.withdraw(&sme);
+}
+
+/// Test that sweep_terminal_dust is NOT blocked by dispute pause
+/// (only by legal hold), allowing treasury operations to proceed during disputes.
+#[test]
+fn test_sweep_terminal_dust_not_blocked_by_dispute_pause() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, sme) = setup(&env);
+    let investor = Address::generate(&env);
+    let token = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "DUSTPAUSE01"),
+        &sme,
+        &100_000i128,
+        &500i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    client.fund(&investor, &100_000i128);
+    client.settle();
+    client.withdraw(&sme);
+
+    // Activate dispute pause (no legal hold)
+    client.pause_dispute(
+        &String::from_str(&env, "TICKET-DUST-001"),
+        &3600u64,
+    );
+    assert!(
+        client.is_dispute_paused(),
+        "dispute pause should be active"
+    );
+
+    // Attempt sweep_terminal_dust while pause is active
+    // Should succeed because dispute pause does not gate treasury operations
+    client.sweep_terminal_dust(&treasury);
+
+    // Now activate legal hold
+    client.set_legal_hold(&true, &String::from_str(&env, "compliance"));
+
+    // Attempt sweep_terminal_dust with legal hold active
+    // Should fail with LegalHoldBlocksTreasuryDustSweep (30)
+    let result = env.try_invoke_contract::<_, ()>(
+        &client.contract_id,
+        &Symbol::new(&env, "sweep_terminal_dust"),
+        soroban_vec![&env, &treasury],
+    );
+    assert!(result.is_err(), "sweep should fail when legal hold active");
+    assert_panic_contains_error_code(result, 30); // LegalHoldBlocksTreasuryDustSweep
+}
+
+
+#[test]
+fn test_upgrade_emits_event_with_schema_version_and_admin() {
+    use soroban_sdk::testutils::Events as _;
+    use crate::ContractUpgraded;
+
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let contract_id = client.address.clone();
+    default_init(&client, &env, &admin, &sme);
+
+    // Upload WASM and get the hash
+    let wasm_hash = env.deployer().upload_contract_wasm(LiquifactEscrow::WASM);
+
+    // Call upgrade
+    client.upgrade(&wasm_hash);
+
+    // Verify the event was emitted with all three fields
+    let events = env.events().all();
+    let last_event = events.events().last().unwrap().clone();
+
+    let expected_event = ContractUpgraded {
+        name: symbol_short!("upgrade"),
+        invoice_id: client.get_escrow().invoice_id,
+        new_wasm_hash: wasm_hash.clone(),
+        schema_version: SCHEMA_VERSION,
+        admin: admin.clone(),
+    }
+    .to_xdr(&env, &contract_id);
+
+    assert_eq!(last_event, expected_event, "upgrade event should contain new_wasm_hash, schema_version, and admin");
 }

@@ -199,6 +199,7 @@ Reviewers should check:
 | [RFC-001](RFC-001-multi-token-support.md) | Multi-Token Support | DRAFT | v2.0 | Extends escrow to support multiple settlement tokens |
 | [RFC-002](RFC-002-yield-reinvestment.md) | Yield Reinvestment | DISCUSSION | v1.5 | Auto-compound investor yield across funding rounds |
 | [RFC-003](RFC-003-registry-integration.md) | Registry Integration | ACCEPTED | v1.4 | Discoverability via centralized registry contract |
+| [RFC-006](RFC-006-multi-token-escrow.md) | Multi-Token Escrow Support | DRAFT | v2.0 | Evaluates token basket, per-token shards, and registry abstraction |
 
 ---
 
@@ -219,4 +220,3 @@ Reviewers should check:
 - **Architecture:** [`docs/arch/`](../arch/) — Visual diagrams and design overview
 - **Runbook:** [`docs/OPERATOR_RUNBOOK.md`](../OPERATOR_RUNBOOK.md) — Operational procedures
 - **Contract README:** [`escrow/README.md`](../../escrow/README.md) — Development guide
-

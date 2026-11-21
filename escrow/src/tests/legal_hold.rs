@@ -90,6 +90,42 @@ fn init_open_with_clear_delay(
     (token, treasury)
 }
 
+fn init_open_with_guardian(
+    client: &LiquifactEscrowClient<'_>,
+    env: &Env,
+    admin: &Address,
+    guardian: &Address,
+    sme: &Address,
+    id: &str,
+) {
+    let token = Address::generate(env);
+    let treasury = Address::generate(env);
+    client.init_with_guardian(
+        admin,
+        guardian,
+        &soroban_sdk::String::from_str(env, id),
+        sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+}
+
 /// Initialise with a real SAC token, fund to target, and mint `TARGET` tokens
 /// into the escrow contract so `withdraw()` can actually transfer them.
 fn init_funded_with_real_token<'a>(
@@ -178,6 +214,33 @@ fn init_settled<'a>(
     client.fund(investor, &TARGET);
     client.settle();
     (client, escrow_id, token, treasury)
+}
+
+#[test]
+fn legal_hold_status_is_false_when_key_is_unset() {
+    let env = Env::default();
+    let client = super::deploy(&env);
+
+    assert!(!client.get_legal_hold_status());
+}
+
+#[test]
+fn legal_hold_status_is_false_when_hold_is_inactive() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    init_open(&client, &env, &admin, &sme, "LHSTATUS01");
+
+    assert!(!client.get_legal_hold_status());
+}
+
+#[test]
+fn legal_hold_status_is_true_when_hold_is_active() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    init_open(&client, &env, &admin, &sme, "LHSTATUS02");
+    client.set_legal_hold(&true, &String::from_str(&env, "compliance"));
+
+    assert!(client.get_legal_hold_status());
 }
 
 // ── 1. fund ──────────────────────────────────────────────────────────────────
@@ -357,6 +420,97 @@ fn set_legal_hold_by_admin_succeeds() {
     assert!(client.get_legal_hold());
     client.set_legal_hold(&false, &String::from_str(&env, ""));
     assert!(!client.get_legal_hold());
+}
+
+#[test]
+fn legal_hold_without_guardian_remains_single_step() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    init_open(&client, &env, &admin, &sme, "LHLEGACY01");
+
+    client.set_legal_hold(&true, &String::from_str(&env, "compliance"));
+
+    assert!(client.get_legal_hold());
+    assert_eq!(client.get_escrow().guardian, None);
+}
+
+#[test]
+fn guardian_legal_hold_requires_admin_proposal_and_guardian_confirmation() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let guardian = Address::generate(&env);
+    init_open_with_guardian(&client, &env, &admin, &guardian, &sme, "LHTWOSTEP1");
+
+    client.propose_legal_hold(&admin);
+    assert!(!client.get_legal_hold());
+
+    client.confirm_legal_hold(&guardian);
+    assert!(client.get_legal_hold());
+}
+
+#[test]
+#[should_panic]
+fn guardian_legal_hold_proposal_requires_admin_auth() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let guardian = Address::generate(&env);
+    init_open_with_guardian(&client, &env, &admin, &guardian, &sme, "LHADMINAUTH");
+
+    env.mock_auths(&[]);
+    client.propose_legal_hold(&admin);
+}
+
+#[test]
+#[should_panic]
+fn guardian_legal_hold_confirmation_requires_guardian_auth() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let guardian = Address::generate(&env);
+    init_open_with_guardian(&client, &env, &admin, &guardian, &sme, "LHGUARDAUTH");
+    client.propose_legal_hold(&admin);
+
+    env.mock_auths(&[]);
+    client.confirm_legal_hold(&guardian);
+}
+
+#[test]
+#[should_panic]
+fn guardian_legal_hold_rejects_expired_proposal() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let guardian = Address::generate(&env);
+    init_open_with_guardian(&client, &env, &admin, &guardian, &sme, "LHEXPIRED1");
+
+    client.propose_legal_hold(&admin);
+    let expired_at = env.ledger().timestamp() + LEGAL_HOLD_PROPOSAL_TTL_SECS;
+    env.ledger().set_timestamp(expired_at);
+    client.confirm_legal_hold(&guardian);
+}
+
+#[test]
+#[should_panic]
+fn guardian_legal_hold_cannot_be_activated_through_legacy_setter() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let guardian = Address::generate(&env);
+    init_open_with_guardian(&client, &env, &admin, &guardian, &sme, "LHBYPASS01");
+
+    client.set_legal_hold(&true, &String::from_str(&env, "compliance"));
+}
+
+#[test]
+#[should_panic]
+fn guardian_legal_hold_cannot_be_activated_through_multisig_setter() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let guardian = Address::generate(&env);
+    init_open_with_guardian(&client, &env, &admin, &guardian, &sme, "LHBYPASS02");
+
+    client.set_legal_hold_multisig(
+        &soroban_sdk::Vec::new(&env),
+        &true,
+        &String::from_str(&env, "compliance"),
+    );
 }
 
 #[test]
@@ -637,11 +791,11 @@ fn clear_legal_hold_when_already_false_is_idempotent() {
     assert!(!client.get_legal_hold());
 }
 
-// ── 13. Non-gated operations are NOT blocked by hold ─────────────────────────
+// ── 13. Recovery controls remain available under hold ────────────────────────
 
-/// `update_maturity`, admin handover, and getters must all work under hold.
+/// Mutations are blocked under hold except explicit recovery controls; getters remain available.
 #[test]
-fn non_risk_operations_not_blocked_by_hold() {
+fn hold_blocks_configuration_but_allows_recovery_and_getters() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
     init_open(&client, &env, &admin, &sme, "LHN002");
@@ -655,11 +809,13 @@ fn non_risk_operations_not_blocked_by_hold() {
     assert_eq!(escrow.status, 0u32);
     assert!(client.get_legal_hold());
 
-    // `update_maturity` must not be blocked.
-    let updated = client.update_maturity(&9999u64);
-    assert_eq!(updated.maturity, 9999u64);
+    // Ordinary configuration changes must be blocked.
+    assert_contract_error(
+        client.try_update_maturity(&9999u64),
+        EscrowError::LegalHoldBlocksMutation,
+    );
 
-    // Two-step admin handover must not be blocked.
+    // Two-step admin handover remains available as a hold recovery path.
     let new_admin = Address::generate(&env);
     client.propose_admin(&new_admin);
     assert_eq!(client.get_pending_admin(), Some(new_admin.clone()));

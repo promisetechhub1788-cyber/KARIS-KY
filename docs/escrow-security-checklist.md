@@ -15,7 +15,7 @@ Every state-mutating entrypoint and the identity required to authorize it.
 | `init` | `admin` (caller-supplied) | `admin.require_auth()` | One-time; panics if escrow exists |
 | `propose_admin` | current `escrow.admin` | `escrow.admin.require_auth()` | `new_admin` must differ; writes `DataKey::PendingAdmin` only |
 | `accept_admin` | `DataKey::PendingAdmin` | `pending.require_auth()` | Promotes pending address into `escrow.admin`; clears pending key |
-| `update_maturity` | `escrow.admin` | `escrow.admin.require_auth()` | Only in `status == 0` |
+| `update_maturity` | `escrow.admin` | `escrow.admin.require_auth()` | Only in `status == 0`; **extensions** (new maturity > current) require a propose/confirm delay or guardian confirmation (issue #241) |
 | `update_funding_target` | `escrow.admin` | `escrow.admin.require_auth()` | Only in `status == 0`; `new_target >= funded_amount` |
 | `set_legal_hold` / `clear_legal_hold` | `escrow.admin` | `escrow.admin.require_auth()` | No timelock; no multisig enforced on-chain |
 | `set_allowlist_active` | `escrow.admin` | `escrow.admin.require_auth()` | Enables/disables `AllowlistActive` gate |
@@ -30,7 +30,9 @@ Every state-mutating entrypoint and the identity required to authorize it.
 | `claim_investor_payout` | `investor` (caller-supplied) | `investor.require_auth()` | `status == 2`; contribution > 0; claim-lock gate |
 | `sweep_terminal_dust` | `treasury` | `treasury.require_auth()` | `status == 2 or 3`; amount ≤ `MAX_DUST_SWEEP_AMOUNT` |
 | `verify_asset_custody` | `escrow.admin` | `escrow.admin.require_auth()` | Admin-triggered reconciliation check; suitable for manual audits or external schedulers |
-| `migrate` | **none** | *(no `require_auth`)* | **Always panics** on all current paths — safe now, dangerous if logic is added without adding an auth guard (see §5.1) |
+| `migrate` | `escrow.admin` (via `load_escrow_require_admin`) | `Self::load_escrow_require_admin(&env)` before version checks | Pre-emptive guard; all current paths panic; idempotency nonce prevents replay |
+| `propose_upgrade` | `escrow.admin` | `escrow.admin.require_auth()` | Records a pending wasm hash and proposal ledger; no code swap (issue #242) |
+| `execute_upgrade` | `escrow.admin` | `escrow.admin.require_auth()` | Only after the minimum delay elapses; performs the actual code swap (issue #242) |
 
 ### Read-only entrypoints
 
@@ -177,9 +179,18 @@ This creates a window where `funded_amount` > actual token balance (unfunded com
 
 ## 5. Assumptions and Risks
 
-### 5.1 `migrate()` has no auth guard
+### 5.1 `migrate()` Authorization and Idempotency Guards
 
-`migrate` performs no `require_auth()` check. In the current implementation every code path panics before any storage write, so there is no exploitable consequence. **If a future developer adds migration logic before the panic branches, the function becomes callable by any account.** Before implementing a migration path, add `escrow.admin.require_auth()` as the first statement.
+**Starting from schema version 7:**
+
+- **Authorization guard:** `migrate()` calls `Self::load_escrow_require_admin(&env)` as the first statement, before any version checks or storage reads.
+- **Idempotency nonce:** After a successful migration, a [`DataKey::MigrationExecutionLog`] entry is written to prevent replaying the same version transition.
+
+The migration entrypoint is now guarded against both unauthorized access and replay attacks. This is critical when migration logic adds state transformations (yield calculations, per-investor records, collateral audits). Replaying these transformations twice would corrupt accounting.
+
+**For developers implementing migration paths:** Ensure the nonce is written **after** state transformation but **before** returning. See `docs/OPERATOR_RUNBOOK.md` §2 for the template.
+
+**For operators:** If you call `migrate(from_version)` and receive error code 93 (`MigrationAlreadyApplied`), verify the on-chain version with `get_version()`. If it matches your target, the migration succeeded — do not retry.
 
 ### 5.2 Accounting-custody decoupling
 
@@ -292,7 +303,8 @@ and does not weaken the auth boundary. Refactors must not move step 3 above step
 | `init` | `admin` | — | line ~549 (`admin`) | `DataKey::Escrow` set |
 | `propose_admin` | current `escrow.admin` | `get_escrow` | line ~1888 | `DataKey::PendingAdmin` set |
 | `accept_admin` | `DataKey::PendingAdmin` | pending read, `get_escrow` after auth | line ~1917 | `DataKey::Escrow` set |
-| `update_maturity` | `escrow.admin` | `get_escrow` | line ~1400 | `DataKey::Escrow` set |
+| `update_maturity` (shorten) | `escrow.admin` | `get_escrow` | line ~1400 | `DataKey::Escrow` set |
+| `update_maturity` (extend) | `escrow.admin` | `get_escrow`, pending-extension read | line ~1400 | `DataKey::Escrow` set only after delay/guardian confirmation (issue #241) |
 | `update_funding_target` | `escrow.admin` | `get_escrow` | line ~1007 | `DataKey::Escrow` set |
 | `set_legal_hold` / `clear_legal_hold` | current `escrow.admin` | `get_escrow` | line ~940 | `DataKey::LegalHold` set |
 | `set_allowlist_active` | `escrow.admin` | `get_escrow` | line ~956 | `DataKey::AllowlistActive` set |
@@ -306,8 +318,17 @@ and does not weaken the auth boundary. Refactors must not move step 3 above step
 | `claim_investor_payout` | `investor` | legal hold, contribution read | line ~1350 | `InvestorClaimed` set |
 | `sweep_terminal_dust` | `treasury` | legal hold, `get_escrow`, treasury read | line ~702 | SEP-41 transfer |
 | `migrate` | **none** (panics) | version read only | — | none (all paths panic) |
+| `propose_upgrade` | `escrow.admin` | `get_escrow` | line ~TBD | `DataKey::PendingUpgrade` set |
+| `execute_upgrade` | `escrow.admin` | `get_escrow`, pending-upgrade read, delay check | line ~TBD | `env.deployer().update_current_contract_wasm` |
 
 Line numbers refer to `escrow/src/lib.rs` at schema version 6; re-audit after refactors.
+
+### Admin-power threat model
+
+The full admin-power threat-model table (admin power, worst-case impact,
+current mitigation, recommended mitigation) lives in
+[`docs/DEPLOYER_SECURITY.md`](./DEPLOYER_SECURITY.md) § "Admin-power threat
+model" (issue #240). Consult it before granting admin authority to any address.
 
 ### Negative-auth test coverage
 
@@ -316,6 +337,8 @@ Line numbers refer to `escrow/src/lib.rs` at schema version 6; re-audit after re
 | `init` | `escrow/src/tests/init.rs` |
 | `propose_admin`, `accept_admin`, `fund`, `fund_with_commitment`, `settle`, `withdraw`, `claim_investor_payout`, attestation, allowlist, sweep | `escrow/src/tests/admin.rs` § auth audit |
 | `update_maturity`, `update_funding_target`, collateral | `escrow/src/tests/admin.rs` |
+| `update_maturity` extension delay/guardian | `escrow/src/tests/admin.rs` (issue #241) |
+| `propose_upgrade`, `execute_upgrade` | `escrow/src/tests/admin.rs` (issue #242) |
 | `set_legal_hold`, `clear_legal_hold` | `escrow/src/tests/legal_hold.rs` |
 | `bind_primary_attestation_hash`, `append_attestation_digest` | `escrow/src/tests/attestations.rs` |
 | `set_allowlist_active`, `set_investor_allowlisted` | `escrow/src/test_allowlist_tests.rs` |

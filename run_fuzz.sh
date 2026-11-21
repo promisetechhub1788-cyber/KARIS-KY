@@ -12,6 +12,16 @@ TARGET="${1:-escrow_funding_operations}"
 DURATION="${2:-60}"
 WORKERS="${3:-4}"
 
+case "$TARGET" in
+    escrow_funding_operations|escrow_settlement_flow|escrow_yield_calculations|escrow_migrate|escrow_attestations)
+        ;;
+    *)
+        echo -e "${RED}Error: unknown target '$TARGET'.${NC}" >&2
+        echo "Available targets: escrow_funding_operations, escrow_settlement_flow, escrow_yield_calculations, escrow_migrate, escrow_attestations" >&2
+        exit 2
+        ;;
+esac
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'

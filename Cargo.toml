@@ -1,6 +1,9 @@
 [workspace]
-members = ["escrow"]
+members = ["escrow", "repl-cli"]
 resolver = "2"
+
+[workspace.package]
+license = "MIT"
 
 [workspace.metadata.cargo-llvm-cov]
 # Exclude test scaffolding from coverage measurement — only production code is gated.
@@ -9,3 +12,14 @@ exclude = [
     "**/*_test.rs",
     "tests/*"
 ]
+
+[workspace.lints.rustdoc]
+# Fail the build on broken intra-doc links so CI catches stale references
+# (e.g. `LiquifactEscrow::set_admin_roles`) instead of silently ignoring them.
+#
+# Policy: every workspace member must opt in to the workspace lints via
+# `[lints] workspace = true` in its own Cargo.toml. This ensures the deny
+# applies to all crates (escrow and repl-cli) when running
+# `cargo doc --workspace`, so broken intra-doc links fail the workspace
+# doc build in CI rather than being silently ignored.
+broken_intra_doc_links = "deny"

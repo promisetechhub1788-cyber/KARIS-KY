@@ -45,16 +45,16 @@ All critical public functions include comprehensive doc comments with:
 - **Invariants** — post-condition guarantees (e.g., immutability, balance conservation)
 
 Functions documented:
-- [`init`](escrow/src/lib.rs#L677) — initialization, immutable token/treasury binding
-- [`fund`](escrow/src/lib.rs#L1444) — investor deposits (simple funding)
-- [`fund_with_commitment`](escrow/src/lib.rs#L1455) — investor deposits with tiered yield + time lock
-- [`settle`](escrow/src/lib.rs#L1665) — SME finalizes settlement (status 1 → 2)
-- [`withdraw`](escrow/src/lib.rs#L1707) — SME pulls liquidity (status 1 → 3)
-- [`cancel_funding`](escrow/src/lib.rs#L2039) — admin cancels open escrow (status 0 → 4)
-- [`refund`](escrow/src/lib.rs#L2073) — investor recovers principal in cancelled state
-- [`claim_investor_payout`](escrow/src/lib.rs#L1790) — investor claims payout after settlement
-- [`compute_investor_payout`](escrow/src/lib.rs#L1817) — pro-rata payout calculation
-- [`sweep_terminal_dust`](escrow/src/lib.rs#L847) — treasury recovers rounding residue
+- [`init`](../escrow/src/lib.rs#L677) — initialization, immutable token/treasury binding
+- [`fund`](../escrow/src/lib.rs#L1444) — investor deposits (simple funding)
+- [`fund_with_commitment`](../escrow/src/lib.rs#L1455) — investor deposits with tiered yield + time lock
+- [`settle`](../escrow/src/lib.rs#L1665) — SME finalizes settlement (status 1 → 2)
+- [`withdraw`](../escrow/src/lib.rs#L1707) — SME pulls liquidity (status 1 → 3)
+- [`cancel_funding`](../escrow/src/lib.rs#L2039) — admin cancels open escrow (status 0 → 4)
+- [`refund`](../escrow/src/lib.rs#L2073) — investor recovers principal in cancelled state
+- [`claim_investor_payout`](../escrow/src/lib.rs#L1790) — investor claims payout after settlement
+- [`compute_investor_payout`](../escrow/src/lib.rs#L1817) — pro-rata payout calculation
+- [`sweep_terminal_dust`](../escrow/src/lib.rs#L847) — treasury recovers rounding residue
 
 ### ✅ 3. Security Validation Tests
 

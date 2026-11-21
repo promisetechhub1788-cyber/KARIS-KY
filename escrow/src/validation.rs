@@ -4,7 +4,7 @@
 //! All validation functions return a descriptive [`crate::EscrowError`] on failure.
 
 use crate::{EscrowError, MAX_INVOICE_ID_STRING_LEN};
-use soroban_sdk::{String, Symbol, Vec, Env};
+use soroban_sdk::{Env, String, Symbol, Vec};
 
 /// Validates an invoice ID string before conversion to Symbol.
 ///
@@ -30,15 +30,16 @@ pub fn validate_invoice_id(env: &Env, invoice_id: &String) -> Result<Symbol, Esc
 
     // Validate charset: alphanumeric + underscore
     for &b in &buf[..len_u] {
-        let ok = b.is_ascii_uppercase() || b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_';
+        let ok =
+            b.is_ascii_uppercase() || b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_';
         if !ok {
             return Err(EscrowError::InvoiceIdInvalidCharset);
         }
     }
 
     // Convert to UTF-8 string
-    let s = core::str::from_utf8(&buf[..len_u])
-        .map_err(|_| EscrowError::InvoiceIdInvalidCharset)?;
+    let s =
+        core::str::from_utf8(&buf[..len_u]).map_err(|_| EscrowError::InvoiceIdInvalidCharset)?;
 
     Ok(Symbol::new(env, s))
 }
@@ -51,10 +52,7 @@ pub fn validate_invoice_id(env: &Env, invoice_id: &String) -> Result<Symbol, Esc
 ///
 /// # Returns
 /// `Ok(())` if valid, or the provided error on failure.
-pub fn validate_string_max_length(
-    s: &String,
-    max_bytes: u32,
-) -> Result<(), EscrowError> {
+pub fn validate_string_max_length(s: &String, max_bytes: u32) -> Result<(), EscrowError> {
     if s.len() > max_bytes {
         Err(EscrowError::InvoiceIdInvalidLength) // Reuse for any string length error
     } else {

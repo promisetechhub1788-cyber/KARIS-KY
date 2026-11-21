@@ -56,6 +56,55 @@ Do NOT increment for:
 
 ---
 
+## Two-Step Upgrade Flow (`propose_upgrade` / `execute_upgrade`)
+
+### Motivation
+
+The legacy `upgrade(new_wasm_hash)` entrypoint takes effect **immediately** upon admin
+authorization. A single compromised admin key can therefore swap the contract code in one
+transaction, with no opportunity for monitoring or intervention.
+
+To mitigate this, upgrades are gated behind a **two-step propose/execute flow with a minimum
+delay**.
+
+### Entrypoints
+
+| Entrypoint | Auth | Description |
+|------------|------|-------------|
+| `propose_upgrade(new_wasm_hash: BytesN<32>)` | Admin | Records a pending upgrade proposal and the earliest execution timestamp. Emits an event. |
+| `execute_upgrade()` | Admin | Executes the pending proposal, but only once the minimum delay has elapsed. Emits an event. |
+| `upgrade(new_wasm_hash: BytesN<32>)` | Admin | **Legacy, gated.** Retained for backward compatibility until the next interface version bump; it now routes through the propose/execute flow rather than applying immediately. |
+
+### Minimum-Delay Semantics
+
+- `propose_upgrade` stores the proposed hash together with `execute_after = now + MIN_UPGRADE_DELAY`.
+- `execute_upgrade` may only be called at or after `execute_after`; calling earlier fails with a
+  delay-not-elapsed error.
+- Proposing again before execution replaces the pending proposal and resets the delay clock.
+- The delay is a compile-time constant (`MIN_UPGRADE_DELAY`); it is not caller-configurable.
+
+### Events
+
+Both steps emit events so off-chain monitors and indexers can observe the upgrade lifecycle:
+
+- **Proposal event** — emitted by `propose_upgrade`, carrying the proposed `new_wasm_hash` and the
+  `execute_after` timestamp.
+- **Execution event** — emitted by `execute_upgrade`, carrying the executed `new_wasm_hash`.
+
+Indexers should alert on proposals and verify that execution only occurs after the delay.
+
+### Interface Version Impact
+
+Adding `propose_upgrade` and `execute_upgrade` is an **additive** change: callers that do not use
+the new entrypoints are unaffected, so `CONTRACT_INTERFACE_VERSION` does **not** need to be bumped
+for their introduction.
+
+The legacy `upgrade` entrypoint is **not removed** in this change; it is gated behind the new flow.
+Removing it (or otherwise changing its signature) is a breaking change and **must** be accompanied
+by a `CONTRACT_INTERFACE_VERSION` bump at that time.
+
+---
+
 ## Append-Only Policy
 
 - **Never reuse or decrement** a numeric value once published in production.
@@ -141,6 +190,33 @@ pub fn emergency_pause(env: Env) {
 
 **Decision:** Keep v1. Existing callers that don't use `emergency_pause` are unaffected.
 
+### Example 5: Adding the Two-Step Upgrade Entrypoints (NO BUMP)
+
+**Before (v1):**
+```rust
+pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+    // Applies immediately on admin auth
+}
+```
+
+**After (v1 maintained):**
+```rust
+pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+    // Records proposal + execute_after; emits proposal event
+}
+
+pub fn execute_upgrade(env: Env) {
+    // Applies pending proposal after MIN_UPGRADE_DELAY; emits execution event
+}
+
+pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+    // Legacy, gated behind the propose/execute flow
+}
+```
+
+**Decision:** Keep v1. The new entrypoints are additive and the legacy `upgrade` signature is
+unchanged. A bump is only required when `upgrade` is eventually removed.
+
 ### Example 3: Changing a Return Type (BUMP)
 
 **Before (v1):**
@@ -185,8 +261,10 @@ Before releasing a new contract version:
 
 - [ ] Confirm all entrypoint signatures remain stable OR version was bumped
 - [ ] Confirm no entrypoints were removed OR version was bumped
+- [ ] Confirm the legacy `upgrade` entrypoint is still present (or a bump was made when removing it)
 - [ ] Confirm return types are stable OR version was bumped
 - [ ] Confirm event schemas are stable OR version was bumped
+- [ ] Confirm `propose_upgrade`/`execute_upgrade` events are documented for indexers
 - [ ] Update `CONTRACT_INTERFACE_VERSION` in code if needed
 - [ ] Test `get_interface_version()` returns the correct value
 - [ ] Document interface changes in PR description
@@ -223,6 +301,7 @@ Before releasing a new contract version:
 
 ## References
 
-- [ADR-002: Authorization Boundaries](docs/adr/ADR-002-auth-boundaries.md) — entrypoint roles
-- [docs/OPERATOR_RUNBOOK.md](docs/OPERATOR_RUNBOOK.md) — deployment procedures
-- [docs/escrow-error-messages.md](docs/escrow-error-messages.md) — stable error codes
+- [ADR-002: Authorization Boundaries](adr/ADR-002-auth-boundaries.md) — entrypoint roles
+- [docs/OPERATOR_RUNBOOK.md](OPERATOR_RUNBOOK.md) — deployment procedures
+- [docs/escrow-error-messages.md](escrow-error-messages.md) — stable error codes
+- [Issue #242](https://github.com/example/repo/issues/242) — two-step propose/execute upgrade guard

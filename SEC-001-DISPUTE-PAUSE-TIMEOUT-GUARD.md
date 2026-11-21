@@ -322,7 +322,7 @@ pub fn pause_dispute(env: Env, ticket_id: String, duration_secs: u64) {
 
 ### Error Code Allocation
 
-Error codes are append-only per the project error policy. Code 170 is assigned to `DisputePauseDurationExceedsMax` (following `DisputePausedBlocksInvestorClaims = 168` and `DisputePauseDurationNotPositive = 169`).
+Error codes are append-only per the project error policy. Code 206 is assigned to `DisputePauseDurationExceedsMax`; code 170 is already assigned to `CloneNotSettled`.
 
 ### Constants Placement
 

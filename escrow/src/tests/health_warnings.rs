@@ -301,3 +301,222 @@ fn test_no_health_warning_settled_escrow() {
         "Settled escrow (status 2) should emit no warning"
     );
 }
+
+
+#[test]
+fn test_health_warning_funding_stalled_after_threshold() {
+    let env = Env::default();
+    let (client, admin, sme) = super::setup(&env);
+    let investor = Address::generate(&env);
+
+    let now = env.ledger().timestamp();
+    let target = 1_000_000i128;
+    let stall_threshold = 7200u64; // 2 hours
+
+    // Initialize with stall threshold
+    client.init(
+        &admin,
+        &SorobanString::from_str(&env, "INV_STALL"),
+        &sme,
+        &target,
+        &800i64,
+        &(now + 100 * 86400), // 100 days (far future)
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(stall_threshold),
+    );
+
+    // Fund only 30% of target (underfunded)
+    client.fund(&investor, &(300_000i128));
+
+    // Immediately check - no warning (just funded)
+    let (warning_type, _, _) = client.check_escrow_health();
+    assert_eq!(
+        warning_type, 0,
+        "Immediately after funding, should emit no stall warning"
+    );
+
+    // Advance time past the stall threshold
+    env.ledger().set_timestamp(now + stall_threshold + 1);
+
+    // Check health again
+    let (warning_type, funded_ratio_bps, _) = client.check_escrow_health();
+    assert_eq!(
+        warning_type, 4004,
+        "After stall threshold with underfunded escrow should emit code 4004"
+    );
+    assert!(funded_ratio_bps < 5000, "Should still be underfunded");
+}
+
+#[test]
+fn test_no_health_warning_funding_not_stalled() {
+    let env = Env::default();
+    let (client, admin, sme) = super::setup(&env);
+    let investor = Address::generate(&env);
+
+    let now = env.ledger().timestamp();
+    let target = 1_000_000i128;
+    let stall_threshold = 7200u64; // 2 hours
+
+    client.init(
+        &admin,
+        &SorobanString::from_str(&env, "INV_NOT_STALL"),
+        &sme,
+        &target,
+        &800i64,
+        &(now + 100 * 86400),
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(stall_threshold),
+    );
+
+    // Fund only 30%
+    client.fund(&investor, &(300_000i128));
+
+    // Advance time but NOT past the stall threshold
+    env.ledger().set_timestamp(now + stall_threshold - 1);
+
+    let (warning_type, _, _) = client.check_escrow_health();
+    assert_eq!(
+        warning_type, 0,
+        "Before stall threshold should emit no warning"
+    );
+}
+
+#[test]
+fn test_no_warning_stall_threshold_not_configured() {
+    let env = Env::default();
+    let (client, admin, sme) = super::setup(&env);
+    let investor = Address::generate(&env);
+
+    let now = env.ledger().timestamp();
+    let target = 1_000_000i128;
+
+    // Initialize WITHOUT stall threshold
+    client.init(
+        &admin,
+        &SorobanString::from_str(&env, "INV_NO_STALL_CFG"),
+        &sme,
+        &target,
+        &800i64,
+        &(now + 100 * 86400),
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None, // No stall threshold
+    );
+
+    // Fund only 30%
+    client.fund(&investor, &(300_000i128));
+
+    // Advance time by many hours
+    env.ledger().set_timestamp(now + 86400);
+
+    let (warning_type, _, _) = client.check_escrow_health();
+    assert_eq!(
+        warning_type, 0,
+        "Without stall threshold configured, should not emit 4004 warning"
+    );
+}
+
+#[test]
+fn test_no_warning_funding_stalled_but_fully_funded() {
+    let env = Env::default();
+    let (client, admin, sme) = super::setup(&env);
+    let investor = Address::generate(&env);
+
+    let now = env.ledger().timestamp();
+    let target = 1_000_000i128;
+    let stall_threshold = 3600u64;
+
+    client.init(
+        &admin,
+        &SorobanString::from_str(&env, "INV_STALL_FULL"),
+        &sme,
+        &target,
+        &800i64,
+        &(now + 100 * 86400),
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(stall_threshold),
+    );
+
+    // Fund 100% (meets target)
+    client.fund(&investor, &target);
+
+    // Advance past stall threshold (escrow is now funded, status = 1)
+    env.ledger().set_timestamp(now + stall_threshold + 1);
+
+    let (warning_type, _, _) = client.check_escrow_health();
+    assert_eq!(
+        warning_type, 0,
+        "Funded escrow (status != 0) should not trigger stall warning even if time has passed"
+    );
+}
+
+#[test]
+fn test_funding_stalled_never_funded_escrow() {
+    let env = Env::default();
+    let (client, admin, _sme) = super::setup(&env);
+
+    let now = env.ledger().timestamp();
+    let target = 1_000_000i128;
+    let stall_threshold = 3600u64;
+
+    client.init(
+        &admin,
+        &SorobanString::from_str(&env, "INV_STALL_NEVER"),
+        &Address::generate(&env), // SME
+        &target,
+        &800i64,
+        &(now + 100 * 86400),
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(stall_threshold),
+    );
+
+    // DO NOT fund at all
+
+    // Advance past stall threshold
+    env.ledger().set_timestamp(now + stall_threshold + 1);
+
+    let (warning_type, _, _) = client.check_escrow_health();
+    assert_eq!(
+        warning_type, 4004,
+        "Unfunded escrow that never received funding should trigger stall after threshold"
+    );
+}

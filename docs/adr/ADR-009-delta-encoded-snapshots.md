@@ -210,7 +210,7 @@ SnapshotDeltaNotFound = 166,
 
 ## References
 
-- [ADR-007: Storage Key Evolution](docs/adr/ADR-007-storage-key-evolution.md)
-- [Escrow Data Model](docs/escrow-data-model.md)
-- [Escrow Pro-Rata Math](docs/escrow-pro-rata.md)
+- [ADR-007: Storage Key Evolution](ADR-007-storage-key-evolution.md)
+- [Escrow Data Model](../escrow-data-model.md)
+- [Escrow Pro-Rata Math](../escrow-pro-rata.md)
 - [Issue #217](https://github.com/karis-ky/escrow-contracts/issues/217)

@@ -87,7 +87,7 @@ stellar container start local
 
 # Wait for the RPC to become ready
 info "Waiting for RPC endpoint to become ready..."
-for i in $(seq 1 30); do
+for ((attempt = 0; attempt < 30; attempt++)); do
   if curl -s "${RPC_URL}" >/dev/null 2>&1; then
     break
   fi

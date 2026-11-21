@@ -1,6 +1,6 @@
 # Escrow Init Parameters — Reference Guide
 
-> **Contract version:** `SCHEMA_VERSION = 6` | `INTERFACE_VERSION = 1`  
+> **Contract version:** `SCHEMA_VERSION = 8` | `INTERFACE_VERSION = 1`
 > **Target audience:** Operators, integrators, and SDK consumers calling `LiquifactEscrow::init`
 
 This document describes every parameter accepted by [`init`](../escrow/src/lib.rs), including
@@ -50,10 +50,12 @@ and funding cancellation.
 
 An ASCII identifier for the invoice, stored as a Soroban `Symbol`.
 
+The canonical contract limit is `MAX_INVOICE_ID_STRING_LEN = 32`.
+
 | Aspect | Detail |
 |--------|--------|
-| **Charset** | `[A-Za-z0-9_]` only. No spaces, hyphens, or special characters. |
-| **Length** | 1–32 bytes (validated at `MAX_INVOICE_ID_STRING_LEN`). |
+| **Charset** | `[A-Za-z0-9_]` only — uppercase/lowercase ASCII letters, digits, and underscores. No spaces, hyphens, periods, or special characters. |
+| **Length** | 1–32 bytes inclusive (`1..=MAX_INVOICE_ID_STRING_LEN`). |
 | **Examples** | `INV001`, `INVOICE_2026_Q3`, `SUPPLIER_A_REF42` |
 | **Validation errors** | Code 4 (`InvoiceIdInvalidLength`), Code 5 (`InvoiceIdInvalidCharset`) |
 | **Gas impact** | Validation is O(n) on string length; negligible for 32 bytes. |
@@ -186,6 +188,10 @@ with smaller amounts.
 
 Limits how many unique addresses can contribute to the escrow. Existing funders
 can still add more principal even at the cap.
+
+`Some(0)` is rejected during `init` with `MaxUniqueInvestorsNotPositive`; zero
+is never treated as an active cap. Use `null` (`None`) for an unlimited number
+of distinct investors.
 
 | Aspect | Detail |
 |--------|--------|

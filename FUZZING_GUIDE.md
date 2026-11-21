@@ -114,6 +114,24 @@ cargo +nightly fuzz run escrow_yield_calculations -- -max_total_time=30
 
 ---
 
+### 4. **escrow_attestations**
+
+Exercises arbitrary append, revoke, and filtered/paginated query sequences.
+
+**Invariants:**
+- Append-log length never exceeds `MAX_ATTESTATION_APPEND_ENTRIES` (32)
+- Invalid or repeated revocations fail without panicking the harness
+- Queries do not panic and returned pages/counts remain within capacity
+
+**Quick run:**
+```bash
+./run_fuzz.sh escrow_attestations 60 4
+```
+
+**Expected result:** ✅ Arbitrary operation sequences preserve the bounded log
+
+---
+
 ## Corpus Files
 
 The fuzzer builds a corpus of interesting inputs in `fuzz/corpus/`:
@@ -173,30 +191,38 @@ cargo +nightly fuzz cmin escrow_funding_operations \
 
 ## Integration with CI
 
-Add fuzzing to your CI pipeline:
+### Nightly Fuzz Job
 
-```yaml
-# .github/workflows/fuzz.yml
-name: Fuzz
-on: [pull_request, push]
+A scheduled workflow runs the fuzz targets every night. It is defined in
+`.github/workflows/ci.yml` (job `fuzz-nightly`) — see that file for the
+authoritative configuration.
 
-jobs:
-  fuzz:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
-      - run: cargo install cargo-fuzz
+**Schedule:** Runs nightly at 02:00 UTC via a cron trigger
+(`schedule: - cron: '0 2 * * *'`). It can also be started manually with
+`workflow_dispatch`.
 
-      - name: Fuzz escrow_funding_operations
-        run: cd escrow && cargo +nightly fuzz run escrow_funding_operations -- -max_total_time=60
+**Duration and workers:** Each fuzz target runs for a bounded duration of
+**300 seconds** (`-max_total_time=300`) with **4 parallel workers**
+(`-jobs=4 -workers=4`), driven by `escrow/run_fuzz.sh`. The run is bounded so
+the job always terminates; it is not always-on fuzzing.
 
-      - name: Fuzz escrow_settlement_flow
-        run: cd escrow && cargo +nightly fuzz run escrow_settlement_flow -- -max_total_time=60
+**Failure surfacing:** Any crash or invariant violation causes the fuzz target
+to exit non-zero, which fails the CI job and surfaces the failure in the
+Actions run. Crash artifacts are uploaded as workflow artifacts for
+reproduction (they are not committed to git).
 
-      - name: Fuzz escrow_yield_calculations
-        run: cd escrow && cargo +nightly fuzz run escrow_yield_calculations -- -max_total_time=60
+To run the same bounded fuzzing locally:
+
+```bash
+cd escrow
+./run_fuzz.sh escrow_funding_operations 300 4
+./run_fuzz.sh escrow_settlement_flow 300 4
+./run_fuzz.sh escrow_yield_calculations 300 4
+./run_fuzz.sh escrow_attestations 300 4
 ```
+
+For pull requests, a shorter bounded fuzz run may also be triggered; see
+`.github/workflows/ci.yml` for the exact triggers and durations.
 
 ## Interpreting Fuzz Output
 

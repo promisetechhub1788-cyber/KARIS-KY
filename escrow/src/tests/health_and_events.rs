@@ -6,8 +6,8 @@
 
 use super::*;
 use crate::{
-    DataKey, EscrowHealthMetrics, AdminChanged, EscrowPaused, FundReceived, LegalHoldSet, YieldTier,
-    INVESTOR_BUCKET_COUNT
+    AdminChanged, DataKey, EscrowHealthMetrics, EscrowPaused, FundReceived, LegalHoldSet,
+    YieldTier, INVESTOR_BUCKET_COUNT,
 };
 use soroban_sdk::{
     symbol_short,
@@ -127,7 +127,10 @@ fn test_health_metrics_overfunded_caps_at_100() {
 
     let metrics = client.get_escrow_health_metrics();
 
-    assert_eq!(metrics.funding_progress_percent, 100, "overfunded should cap at 100%");
+    assert_eq!(
+        metrics.funding_progress_percent, 100,
+        "overfunded should cap at 100%"
+    );
     assert_eq!(metrics.unique_investor_count, 1);
     assert_eq!(metrics.average_contribution_size, target + target / 2);
 }
@@ -164,7 +167,10 @@ fn test_health_metrics_maturity_past() {
     let metrics = client.get_escrow_health_metrics();
 
     // Our test ledger starts at timestamp 12345 (from setup), so maturity is future
-    assert!(metrics.days_to_maturity > 0, "maturity should be future relative to 12345");
+    assert!(
+        metrics.days_to_maturity > 0,
+        "maturity should be future relative to 12345"
+    );
 }
 
 #[test]
@@ -290,8 +296,10 @@ fn test_bucketing_aggregate_matches_funded_amount() {
     });
 
     let escrow = client.get_escrow();
-    assert_eq!(bucket_sum, escrow.funded_amount,
-        "bucketed aggregate must equal funded_amount");
+    assert_eq!(
+        bucket_sum, escrow.funded_amount,
+        "bucketed aggregate must equal funded_amount"
+    );
     assert_eq!(bucket_sum, total_bucketed);
 }
 
@@ -469,7 +477,10 @@ fn test_bucketing_refund_subtracts_from_bucket() {
         });
         sum
     };
-    assert_eq!(bucket_sum_after_refund, 0, "buckets should be empty after full refund");
+    assert_eq!(
+        bucket_sum_after_refund, 0,
+        "buckets should be empty after full refund"
+    );
 }
 
 // ─── Task 3: Integration Tests for New Events ────────────────────────────
@@ -516,7 +527,10 @@ fn test_fund_received_event_emitted_on_fund() {
             event_str.contains("fund_recv")
         })
         .collect();
-    assert!(!fund_recv_events.is_empty(), "FundReceived event should be emitted on fund()");
+    assert!(
+        !fund_recv_events.is_empty(),
+        "FundReceived event should be emitted on fund()"
+    );
 }
 
 #[test]
@@ -657,7 +671,10 @@ fn test_escrow_paused_event_emitted() {
             event_str.contains("esc_pause")
         })
         .collect();
-    assert!(!pause_events.is_empty(), "EscrowPaused event should be emitted on pause");
+    assert!(
+        !pause_events.is_empty(),
+        "EscrowPaused event should be emitted on pause"
+    );
 
     client.set_escrow_paused(&false);
     assert!(!client.is_escrow_paused());

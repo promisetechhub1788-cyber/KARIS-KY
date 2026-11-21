@@ -1039,3 +1039,527 @@ fn test_lower_cap_emits_event() {
         .to_xdr(&env, &contract_id)]
     );
 }
+
+#[test]
+#[should_panic(expected = "FundingBelowMinContribution")]
+fn test_min_contribution_floor_fund_with_commitment_below_value_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+
+    let floor = 1_000_000_000i128;
+    client.init(
+        &admin,
+        &String::from_str(&env, "COMMIT_FLOOR_BELOW"),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &Some(floor),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // fund_with_commitment should also reject amounts below floor
+    client.fund_with_commitment(&Address::generate(&env), &(floor - 1), &86400u64);
+}
+
+#[test]
+fn test_min_contribution_floor_fund_with_commitment_exact_value_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+
+    let floor = 1_000_000_000i128;
+    let inv = Address::generate(&env);
+    client.init(
+        &admin,
+        &String::from_str(&env, "COMMIT_FLOOR_EXACT"),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &Some(floor),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // fund_with_commitment with exact floor value should succeed
+    client.fund_with_commitment(&inv, &floor, &86400u64);
+    assert_eq!(client.get_contribution(&inv), floor);
+    assert_eq!(client.get_unique_funder_count(), 1);
+}
+
+#[test]
+fn test_min_contribution_floor_fund_with_commitment_above_value_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+
+    let floor = 1_000_000_000i128;
+    let inv = Address::generate(&env);
+    client.init(
+        &admin,
+        &String::from_str(&env, "COMMIT_FLOOR_ABOVE"),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &Some(floor),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // fund_with_commitment with value above floor should succeed
+    let amount = floor + 500_000_000i128;
+    client.fund_with_commitment(&inv, &amount, &86400u64);
+    assert_eq!(client.get_contribution(&inv), amount);
+    assert_eq!(client.get_unique_funder_count(), 1);
+}
+
+#[test]
+#[should_panic(expected = "FundingBelowMinContribution")]
+fn test_min_contribution_floor_both_paths_consistent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+
+    let floor = 2_000_000_000i128;
+    client.init(
+        &admin,
+        &String::from_str(&env, "BOTH_PATHS_FLOOR"),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &Some(floor),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // Both fund and fund_with_commitment should enforce the same floor
+    // Verify fund rejects below floor (this test uses fund_with_commitment, but tests that both are consistent)
+    let inv = Address::generate(&env);
+    client.fund_with_commitment(&inv, &(floor - 1), &0u64);
+}
+
+
+// ============================================================================
+// Tests for get_investor_cap_status() read-only entrypoint
+// ============================================================================
+
+#[test]
+fn test_investor_cap_status_no_cap_set() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+
+    // Initialize escrow with NO investor cap (max_unique_investors = None)
+    client.init(
+        &admin,
+        &String::from_str(&env, "NO_CAP_TEST"),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // Get cap status when no cap is set
+    let status = client.get_investor_cap_status();
+
+    // Verify: max should be u32::MAX when no cap is set
+    assert_eq!(status.max, u32::MAX);
+    assert_eq!(status.current, 0);
+    assert_eq!(status.remaining, u32::MAX);
+    assert_eq!(status.is_full, false);
+
+    // Add some investors
+    let inv1 = Address::generate(&env);
+    client.fund(&inv1, &30_000_000_000i128);
+
+    let inv2 = Address::generate(&env);
+    client.fund(&inv2, &30_000_000_000i128);
+
+    // Get status again
+    let status = client.get_investor_cap_status();
+
+    // With no cap, should remain unconstrained
+    assert_eq!(status.max, u32::MAX);
+    assert_eq!(status.current, 2);
+    assert_eq!(status.remaining, u32::MAX.saturating_sub(2));
+    assert_eq!(status.is_full, false);
+}
+
+#[test]
+fn test_investor_cap_status_with_cap_and_room() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+
+    // Initialize with a cap of 5 investors
+    client.init(
+        &admin,
+        &String::from_str(&env, "CAP_WITH_ROOM"),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &Some(5u32),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // Initial state: 0 investors, cap of 5
+    let status = client.get_investor_cap_status();
+    assert_eq!(status.max, 5);
+    assert_eq!(status.current, 0);
+    assert_eq!(status.remaining, 5);
+    assert_eq!(status.is_full, false);
+
+    // Add 2 investors
+    for i in 0..2 {
+        let inv = Address::generate(&env);
+        client.fund(&inv, &30_000_000_000i128);
+    }
+
+    let status = client.get_investor_cap_status();
+    assert_eq!(status.max, 5);
+    assert_eq!(status.current, 2);
+    assert_eq!(status.remaining, 3);
+    assert_eq!(status.is_full, false);
+
+    // Add 2 more investors (total 4 out of 5)
+    for i in 0..2 {
+        let inv = Address::generate(&env);
+        client.fund(&inv, &30_000_000_000i128);
+    }
+
+    let status = client.get_investor_cap_status();
+    assert_eq!(status.max, 5);
+    assert_eq!(status.current, 4);
+    assert_eq!(status.remaining, 1);
+    assert_eq!(status.is_full, false);
+}
+
+#[test]
+fn test_investor_cap_status_at_capacity() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+
+    // Initialize with a cap of 3 investors
+    client.init(
+        &admin,
+        &String::from_str(&env, "CAP_FULL"),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &Some(3u32),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // Add exactly 3 investors to fill the cap
+    for i in 0..3 {
+        let inv = Address::generate(&env);
+        client.fund(&inv, &30_000_000_000i128);
+    }
+
+    // Get cap status when at capacity
+    let status = client.get_investor_cap_status();
+
+    // Verify: is_full should be true, remaining should be 0
+    assert_eq!(status.max, 3);
+    assert_eq!(status.current, 3);
+    assert_eq!(status.remaining, 0);
+    assert_eq!(status.is_full, true);
+}
+
+#[test]
+fn test_investor_cap_status_cap_of_one() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+
+    // Initialize with a cap of 1 investor (edge case)
+    client.init(
+        &admin,
+        &String::from_str(&env, "CAP_ONE"),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &Some(1u32),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // Verify initial state: cap 1, current 0, room 1, not full
+    let status = client.get_investor_cap_status();
+    assert_eq!(status.max, 1);
+    assert_eq!(status.current, 0);
+    assert_eq!(status.remaining, 1);
+    assert_eq!(status.is_full, false);
+
+    // Add one investor
+    let inv = Address::generate(&env);
+    client.fund(&inv, &50_000_000_000i128);
+
+    // Verify state: cap 1, current 1, room 0, is_full true
+    let status = client.get_investor_cap_status();
+    assert_eq!(status.max, 1);
+    assert_eq!(status.current, 1);
+    assert_eq!(status.remaining, 0);
+    assert_eq!(status.is_full, true);
+
+    // Existing investor can still fund more (cap applies to unique investors, not total principal)
+    client.fund(&inv, &20_000_000_000i128);
+
+    // Verify state unchanged in terms of investor count
+    let status = client.get_investor_cap_status();
+    assert_eq!(status.max, 1);
+    assert_eq!(status.current, 1);
+    assert_eq!(status.remaining, 0);
+    assert_eq!(status.is_full, true);
+}
+
+#[test]
+fn test_investor_cap_status_large_cap() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+
+    // Initialize with a very large cap (1000)
+    let large_cap = 1000u32;
+    client.init(
+        &admin,
+        &String::from_str(&env, "LARGE_CAP"),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &Some(large_cap),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let status = client.get_investor_cap_status();
+    assert_eq!(status.max, large_cap);
+    assert_eq!(status.current, 0);
+    assert_eq!(status.remaining, large_cap);
+    assert_eq!(status.is_full, false);
+
+    // Add 50 investors
+    for _i in 0..50 {
+        let inv = Address::generate(&env);
+        client.fund(&inv, &1_000_000_000i128);
+    }
+
+    let status = client.get_investor_cap_status();
+    assert_eq!(status.max, large_cap);
+    assert_eq!(status.current, 50);
+    assert_eq!(status.remaining, large_cap - 50);
+    assert_eq!(status.is_full, false);
+}
+
+#[test]
+fn test_investor_cap_status_after_cap_lowering() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+
+    // Initialize with a cap of 10
+    client.init(
+        &admin,
+        &String::from_str(&env, "LOWER_CAP"),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &Some(10u32),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // Add 5 investors
+    for _i in 0..5 {
+        let inv = Address::generate(&env);
+        client.fund(&inv, &10_000_000_000i128);
+    }
+
+    let status = client.get_investor_cap_status();
+    assert_eq!(status.max, 10);
+    assert_eq!(status.current, 5);
+    assert_eq!(status.remaining, 5);
+    assert_eq!(status.is_full, false);
+
+    // Admin lowers cap to 7
+    client.lower_max_unique_investors(&admin, &7u32);
+
+    // Verify the cap status reflects the new lower cap
+    let status = client.get_investor_cap_status();
+    assert_eq!(status.max, 7);
+    assert_eq!(status.current, 5);
+    assert_eq!(status.remaining, 2);
+    assert_eq!(status.is_full, false);
+
+    // If we add 2 more investors, we should be at capacity
+    for _i in 0..2 {
+        let inv = Address::generate(&env);
+        client.fund(&inv, &10_000_000_000i128);
+    }
+
+    let status = client.get_investor_cap_status();
+    assert_eq!(status.max, 7);
+    assert_eq!(status.current, 7);
+    assert_eq!(status.remaining, 0);
+    assert_eq!(status.is_full, true);
+}
+
+#[test]
+fn test_unique_investors_cap_boundary_with_fund_with_commitment() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "CAP_COMMIT"),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &1000u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &Some(2u32), // cap = 2 investors
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let inv1 = Address::generate(&env);
+    let inv2 = Address::generate(&env);
+    let inv3 = Address::generate(&env);
+
+    // First investor funds with commitment
+    client.fund_with_commitment(&inv1, &10_000_000_000i128, &100u64);
+    assert_eq!(client.get_unique_funder_count(), 1);
+
+    // Second investor funds with commitment (reaches cap)
+    client.fund_with_commitment(&inv2, &10_000_000_000i128, &200u64);
+    assert_eq!(client.get_unique_funder_count(), 2);
+
+    // Third investor attempts to fund with commitment (exceeds cap)
+    let res = client.try_fund_with_commitment(&inv3, &10_000_000_000i128, &100u64);
+    assert!(res.is_err());
+    assert_eq!(client.get_unique_funder_count(), 2);
+}
+

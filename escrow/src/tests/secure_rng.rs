@@ -81,10 +81,7 @@ fn test_soroban_prng_available() {
 
     // Verify non-zero (extremely unlikely if broken).
     let is_nonzero = random_bytes.iter().any(|&b| b != 0);
-    assert!(
-        is_nonzero,
-        "Soroban PRNG should produce non-trivial output"
-    );
+    assert!(is_nonzero, "Soroban PRNG should produce non-trivial output");
 }
 
 /// Test: Verify that Soroban PRNG produces different values on successive calls.

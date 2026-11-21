@@ -75,6 +75,7 @@ pub fn init(
 
 - `None` for `max_unique_investors`: No distinct-investor cap (unlimited investors)
 - `Some(n)` for `max_unique_investors`: Cap of `n` distinct investors
+- `Some(0)` for `max_unique_investors`: Rejected during `init` with `MaxUniqueInvestorsNotPositive`; use `None` for no cap
 - `None` for `max_per_investor`: No per-investor cap (unlimited principal per address)
 - `Some(x)` for `max_per_investor`: Immutable maximum cumulative principal per investor address
 - **Validation:** Both caps must be positive if configured (`> 0`)

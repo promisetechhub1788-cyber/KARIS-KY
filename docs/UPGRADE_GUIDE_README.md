@@ -45,6 +45,13 @@ This folder contains **4 interconnected documents** totaling ~2,200 lines coveri
 - **NO** → You're on **Additive WASM Upgrade** (safer, faster)
 - **YES** → You're on **Redeploy** (riskier, more complex)
 
+**2 min:** Remember that **every** on-chain code swap now goes through the
+guarded two-step flow (`propose_upgrade` → wait out the minimum delay →
+`execute_upgrade`). The direct `upgrade` entrypoint is deprecated and gated
+behind this flow; do not use it for new upgrades. See
+[Two-step upgrade flow](#-two-step-upgrade-flow-propose_upgrade--execute_upgrade)
+below.
+
 **5 min:** Read UPGRADE_DOCUMENTATION_INDEX.md to see the two paths
 
 **30 min:** Read the relevant section in MULTI_INSTANCE_UPGRADE_GUIDE.md:
@@ -52,6 +59,46 @@ This folder contains **4 interconnected documents** totaling ~2,200 lines coveri
 - Redeploy: Read Part 1 + 3
 
 **Execution:** Print and use UPGRADE_CHECKLIST.md
+
+---
+
+## 🔐 Two-step upgrade flow (`propose_upgrade` / `execute_upgrade`)
+
+All code swaps are guarded by a propose/execute pair with a mandatory minimum
+delay. This prevents a single compromised admin key from swapping the contract
+code in one transaction.
+
+### How it works
+
+1. **`propose_upgrade(new_wasm_hash)`** — Admin-only. Records the proposed WASM
+   hash and the earliest execution timestamp (`now + MIN_UPGRADE_DELAY`).
+   Emits an `upgrade_proposed` event. Proposing again replaces the pending
+   proposal and restarts the delay clock.
+2. **Wait out the minimum delay.** During this window operators can review the
+   proposed hash, verify the build, and coordinate legal hold. Execution before
+   the delay elapses is rejected.
+3. **`execute_upgrade()`** — Admin-only. Requires a pending proposal whose delay
+   has elapsed. Performs the actual WASM swap and emits an `upgrade_executed`
+   event. The pending proposal is cleared.
+
+### Interaction with the additive vs. redeploy decision
+
+The propose/execute flow is **orthogonal** to the additive-vs-redeploy choice —
+it only governs *how* the new WASM is applied, not *which* path you take:
+
+| Path | What the guarded flow does |
+|------|----------------------------|
+| **Additive WASM Upgrade** | `propose_upgrade(new_hash)` then `execute_upgrade()` after the delay. Same contract ID; rollback is another propose/execute pair with the previous hash. |
+| **Redeploy** | The new instance is deployed and initialized normally; the guarded flow applies only if you later upgrade that instance's WASM in place. |
+
+### Operator rules
+
+- Never call the deprecated direct `upgrade` entrypoint; it is gated behind the
+  new flow and will be removed at the next interface version bump.
+- Always confirm the delay has elapsed before calling `execute_upgrade()`.
+- Treat the proposal window as a review gate: verify the hash, run the
+  pre-upgrade checklist, and complete legal hold coordination inside it.
+- Record both the proposal and execution events in the upgrade record.
 
 ---
 
@@ -104,6 +151,7 @@ This guide meets all requested criteria:
 
 ### "I'm executing an upgrade today"
 → UPGRADE_CHECKLIST.md (print this) + UPGRADE_DECISION_TREES.md (keep open)
+→ Remember: `propose_upgrade(hash)` first, wait out the minimum delay, then `execute_upgrade()`
 
 ### "What type of upgrade should I do?"
 → OPERATOR_RUNBOOK.md Section 1 (5 min) + UPGRADE_DECISION_TREES.md Decision Tree 1
@@ -150,6 +198,7 @@ This guide meets all requested criteria:
 - ✓ Clean slate for initialization
 
 ### Both paths include:
+- Guarded two-step upgrade (`propose_upgrade` → delay → `execute_upgrade`)
 - Legal hold coordination (blocks operations during upgrade)
 - Testnet staging before mainnet
 - Pre-flight build/test/lint verification
@@ -186,12 +235,66 @@ This guide meets all requested criteria:
 | Question | Answer location |
 |----------|-----------------|
 | What upgrade path should I use? | OPERATOR_RUNBOOK.md § 1 or UPGRADE_DECISION_TREES.md § DT1 |
+| How do I actually apply the new WASM? | This README § Two-step upgrade flow |
 | Should I call migrate()? | UPGRADE_DECISION_TREES.md § DT2 |
 | Is it safe to upgrade this instance now? | UPGRADE_DECISION_TREES.md § DT3 |
 | What do I do if the upgrade fails? | UPGRADE_DECISION_TREES.md § DT4 |
 | What's that issue with legal hold? | UPGRADE_DECISION_TREES.md § Pitfall 3 |
 | How do I verify the upgrade worked? | MULTI_INSTANCE_UPGRADE_GUIDE.md § Part 5 |
 | My error code: 90, 91, or 92 | escrow-error-messages.md (search code) |
+
+---
+
+## ✅ Release preflight
+
+Before every release, run the release preflight script from the repository root:
+
+```bash
+./scripts/release_preflight.sh
+```
+
+The script runs all three release validators together and reports a single
+go/no-go:
+
+1. **Build metadata validator** — `validate_build_metadata.py` checks the
+   build metadata is complete and consistent.
+2. **Spec validation** — validates `spec.json` against the expected contract
+   interface.
+3. **Schema version matrix validator** — checks the schema version matrix is
+   consistent with the current `SCHEMA_VERSION`.
+
+The script exits **non-zero if any validator fails**, so it can be wired into
+CI or run manually as a release gate. Do not cut a release unless the preflight
+passes cleanly.
+
+---
+
+## 🤖 Dependency update grouping (Dependabot)
+
+`.github/dependabot.yml` groups dependency updates to keep PR noise down:
+
+- **Cargo ecosystem:** minor and patch updates are batched into a single group.
+- **npm ecosystem:** minor and patch updates are batched into a single group.
+
+Major-version bumps are **not** auto-grouped and are **not** auto-merged; they
+arrive as individual PRs for explicit review. Auto-merge is intentionally out of
+scope — every grouped PR still requires human approval.
+
+---
+
+## 📈 Coverage target and CI summary
+
+The project targets **≥95% line coverage** (see `START_HERE.txt`). CI generates
+a job summary on every run using `cargo-llvm-cov` that includes:
+
+- Total test counts
+- Coverage percentage
+- Coverage delta versus `main`
+
+The summary is appended to `$GITHUB_STEP_SUMMARY` and renders directly on pull
+requests so reviewers can see the coverage impact at a glance. A coverage drop
+does **not** currently fail CI (that is a separate policy decision), but
+reviewers should treat any drop below the ≥95% target as a blocker.
 
 ---
 
@@ -264,6 +367,9 @@ For upgrades affecting future versions, update:
 - ✓ Governance and access control workflow
 
 **Ready to upgrade safely across multiple instances.**
+
+All upgrades are applied through the guarded `propose_upgrade` / `execute_upgrade`
+flow with a mandatory minimum delay.
 
 ---
 

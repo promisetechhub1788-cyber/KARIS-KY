@@ -80,6 +80,29 @@ if report.funded_exceeds_target_not_advanced {
 }
 ```
 
+## Remediation Runbook
+
+When `detect_state_inconsistencies` reports one or more `true` flags (or a `StateInconsistenciesDetected` event fires), use the table below to interpret each finding and take the corresponding operator action. Every finding type has a remediation entry.
+
+| Finding Flag | What It Means | Operator Remediation |
+|--------------|---------------|----------------------|
+| `funded_exceeds_target_not_advanced` | Principal received exceeds the funding target, but the escrow status was never advanced to funded (`status < 1`). Funding is effectively complete but the lifecycle is stuck. | Do **not** mutate state manually. Capture the report and event, then escalate to the contract maintainers to advance the escrow via the normal funding-close path. Pause any downstream settlement until status is corrected. |
+| `funded_amount_positive_status_open` | `funded_amount > 0` while `status == 0` (open). Funds were recorded but the escrow still appears open. | Verify the funding transaction(s) on-chain and confirm the expected status transition. If the transition was missed, escalate to maintainers to reconcile status; do not accept new contributions until resolved. |
+| `zero_funded_amount_advanced_status` | Escrow advanced past open (`status >= 1`) but `funded_amount == 0`. An advanced escrow should always carry principal. | Treat as a critical data-integrity issue. Freeze further operations on this escrow, preserve the report/event evidence, and escalate to maintainers to investigate the funding record and status history. |
+| `funders_exist_status_open` | `unique_funder_count > 0` while `status == 0`. Investors are recorded but the escrow remains open. | Confirm whether the funding-close transition was expected. Escalate to maintainers to advance status; notify affected investors that the escrow is under reconciliation. |
+| `no_funders_advanced_status` | Escrow advanced (`status >= 1`) but `unique_funder_count == 0`. No investors recorded despite advancement. | Treat as a critical integrity issue. Halt settlement/withdrawal flows for this escrow, retain evidence, and escalate to maintainers to audit the funder registry and advancement path. |
+| `snapshot_exists_not_funded` | A funding-close snapshot is set while `status < 1`. The snapshot should only exist once the escrow is funded. | Do not rely on the snapshot for calculations. Escalate to maintainers to reconcile the snapshot with the actual status; verify no downstream logic consumed the premature snapshot. |
+| `snapshot_missing_post_funded` | No funding-close snapshot exists while `status >= 2`. Advanced escrows require a snapshot for correct accounting. | Block any operation that depends on the snapshot (e.g. yield/settlement math). Escalate to maintainers to reconstruct or restore the snapshot before proceeding. |
+| `settled_before_maturity_lock` | `status == 2` (settled) with `maturity > 0` and `ledger_time < maturity`. Settlement occurred before the maturity lock expired. | Treat as a policy violation. Preserve the report/event and ledger timestamps, notify compliance, and escalate to maintainers to review the settlement path. Do not process further payouts on this escrow. |
+| `invalid_funding_amounts` | `funding_target <= 0` or invoice `amount <= 0`. The escrow was configured with non-positive amounts. | Flag the escrow as misconfigured. Prevent new contributions and escalate to maintainers to correct the configuration; verify no funds were accepted against the invalid target. |
+| `invalid_status_value` | `status > 4`, outside the valid range `0..=4`. The stored status is corrupt or from an incompatible version. | Treat as a critical integrity issue. Halt all operations on the escrow, capture the raw status value and report, and escalate to maintainers for recovery. Do not attempt to coerce the status manually. |
+
+**General operator guidance:**
+- `detect_state_inconsistencies` is read-only and safe to call repeatedly; use it as the first step in any incident triage.
+- Always capture the full `StateInconsistencyReport` and the `StateInconsistenciesDetected` event (including `invoice_id`) as evidence before escalating.
+- Never mutate contract state directly to "fix" a finding — remediation is performed by the contract maintainers through the supported entrypoints.
+- For any critical finding (`zero_funded_amount_advanced_status`, `no_funders_advanced_status`, `invalid_status_value`), pause dependent operations immediately and escalate.
+
 ## Test Coverage
 
 Comprehensive test suite in `escrow/src/tests/state_inconsistency.rs` with 8 tests:

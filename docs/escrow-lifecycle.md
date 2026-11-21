@@ -64,7 +64,7 @@ reducing transaction overhead for primary issuance workflows.
 **Semantics:**
 - Each entry `(investor_address, amount)` is processed sequentially
 - Per-investor `require_auth()` is called for each entry
-- All existing [`fund()`](funding.md) invariants (allowlist, caps, min contribution, overflow guards)
+- All existing [`fund()`](../escrow/src/lib.rs#L1444) invariants (allowlist, caps, min contribution, overflow guards)
   are enforced per entry
 - One `EscrowFunded` event is emitted per entry
 - If any entry fails its invariants, the call returns an error **without corrupting prior entries**
@@ -135,6 +135,91 @@ Once one path is taken, the other is unreachable:
 
 ---
 
+## Partial settlement (`partial_settle` / `settle(Some(amount))`)
+
+Full settlement pays investors the entire outstanding principal plus yield in one shot.
+**Partial settlement** lets the SME release a portion of the outstanding principal now and
+settle the remainder later, without leaving the `funded` state. This is useful when the SME
+receives cash in tranches (e.g. a customer pays an invoice in installments) and wants to
+pass each tranche through to investors as it arrives.
+
+### How it works
+
+- `partial_settle(amount)` (equivalently `settle(Some(amount))`) requires `status == 1` (funded),
+  SME auth, and no active legal hold — the same gates as full `settle()`.
+- `amount` must be `> 0` and `<= outstanding principal`. Settling the full outstanding principal
+  via `partial_settle` is equivalent to a full `settle()` and transitions `status 1 → 2`.
+- Each partial settlement **distributes `amount` of principal pro-rata** across investors based on
+  their contribution share, and records the cumulative amount distributed so far.
+- The escrow **stays in `funded`** after a partial settlement; investors can claim their share
+  immediately via `claim_investor_payout()`.
+- A later `settle()` (or `partial_settle` of the remaining balance) finalizes the escrow.
+
+### Investor-facing effect
+
+Investors are paid **incrementally, as each tranche is settled**, rather than waiting for a single
+final settlement. Each investor's claimable amount after a partial settlement is:
+
+```
+claimable_i = amount * (contribution_i / total_principal) - already_claimed_i
+```
+
+Because distribution is pro-rata, every investor receives the same fraction of their contribution
+at each step. Investors who have not yet claimed simply accumulate a larger claimable balance.
+
+### Worked numeric example
+
+Assume an escrow with `funding_target = 100_000` and three investors:
+
+| Investor | Contribution | Share |
+|----------|--------------|-------|
+| Alice | 50_000 | 50% |
+| Bob | 30_000 | 30% |
+| Carol | 20_000 | 20% |
+| **Total** | **100_000** | **100%** |
+
+**Step 1 — SME calls `partial_settle(40_000)`.**
+
+40% of principal is distributed pro-rata:
+
+| Investor | Distributed this step | Cumulative distributed |
+|----------|-----------------------|------------------------|
+| Alice | 40_000 × 50% = 20_000 | 20_000 |
+| Bob | 40_000 × 30% = 12_000 | 12_000 |
+| Carol | 40_000 × 20% = 8_000 | 8_000 |
+| **Total** | **40_000** | **40_000** |
+
+Status remains `1` (funded). `get_distributed_principal()` now returns `40_000`.
+
+**Step 2 — SME calls `partial_settle(60_000)` to settle the remainder.**
+
+| Investor | Distributed this step | Cumulative distributed |
+|----------|-----------------------|------------------------|
+| Alice | 60_000 × 50% = 30_000 | 50_000 |
+| Bob | 60_000 × 30% = 18_000 | 30_000 |
+| Carol | 60_000 × 20% = 12_000 | 20_000 |
+| **Total** | **60_000** | **100_000** |
+
+Because the full outstanding principal has now been distributed, the escrow transitions
+`status 1 → 2` (settled). `get_distributed_principal()` returns `100_000`.
+
+### `get_distributed_principal`
+
+`get_distributed_principal()` returns the **cumulative principal that has been distributed to
+investors so far** across all settlements (partial and final). It is the running total of every
+`partial_settle`/`settle` amount applied to principal.
+
+- Before any settlement: `0`.
+- After a partial settlement of `amount`: increases by `amount`.
+- After full settlement: equals the total funded principal.
+
+It lets SMEs and investors verify how much principal has been released without reconstructing
+the history of settlement calls, and it is the value used to compute the remaining outstanding
+principal (`total_principal - get_distributed_principal()`) that a subsequent `partial_settle`
+may distribute.
+
+---
+
 ## Investor refund path (status 4 — cancelled)
 
 When an escrow is cancelled before reaching its funding target, investors may recover
@@ -171,9 +256,13 @@ their principal:
 | `withdraw()` | SME |
 | `cancel_funding()` | Admin only |
 | `set_legal_hold()` | Admin only |
-| `update_maturity()` | Admin only |
+| `update_maturity()` | Admin only (extensions require timelock/guardian; see below) |
+| `propose_maturity_extension()` | Admin only |
+| `confirm_maturity_extension()` | Admin only (after delay or guardian confirmation) |
 | `propose_admin()` | Admin only |
 | `accept_admin()` | Pending admin only |
+| `propose_upgrade()` | Admin only |
+| `execute_upgrade()` | Admin only (after delay) |
 
 The SME role represents the off-chain settlement policy authority. The admin role
 handles on-chain configuration and compliance controls.
@@ -207,28 +296,6 @@ When `maturity > 0`:
 
 ---
 
-## Terminal states and dust sweep
+## Maturity extension guard (`update_ma
 
-`sweep_terminal_dust()` is permitted in all three terminal states:
-
-| Status | Terminal | Dust sweep allowed |
-|--------|----------|--------------------|
-| `2` (settled) | Yes | Yes |
-| `3` (withdrawn) | Yes | Yes |
-| `4` (cancelled) | Yes | Yes |
-| `5` (archived) | Yes | Yes |
-
-This allows the treasury to recover any rounding residue left after all investors
-have been refunded or the escrow has been archived.
-
----
-
-## Security notes
-
-- **Out of scope:** Non-standard token economics (rebasing, fee-on-transfer).
-  See `escrow/src/external_calls.rs` and `docs/ESCROW_TOKEN_INTEGRATION_CHECKLIST.md`.
-- **funded_amount** is a non-decreasing i128. Overflow is checked via `checked_add`.
-- **Snapshot immutability:** `FundingCloseSnapshot` is written once at the
-  `0 → 1` transition and must remain readable after `settle()` or `withdraw()`.
-- **Refund double-spend prevention:** `InvestorContribution` is zeroed before the
-  token transfer; a second `refund()` call finds contribution `0` and panics.
+/* … truncated 4646 chars — edit only what you need near the top … */

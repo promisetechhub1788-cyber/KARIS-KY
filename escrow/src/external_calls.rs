@@ -67,7 +67,24 @@
 //! post-call accounting invariants at the external-call boundary where token behavior is observed.
 
 use crate::{ensure, fail, EscrowError};
-use soroban_sdk::{token::TokenClient, Address, Env, MuxedAddress};
+use soroban_sdk::{token::TokenClient, Address, Env, MuxedAddress, Symbol};
+
+/// Attempt to register this escrow with the configured registry.
+///
+/// Registry integration is deliberately best-effort: a missing or failing registry must not
+/// prevent the escrow from continuing its own lifecycle.
+pub fn register_escrow_with_registry(
+    env: &Env,
+    registry: &Address,
+    invoice_id: Symbol,
+    escrow_address: Address,
+) -> bool {
+    let args = soroban_sdk::vec![env, invoice_id, escrow_address];
+    matches!(
+        env.try_invoke_contract::<(), (), _>(registry, &Symbol::new(env, "register_escrow"), args),
+        Ok(Ok(()))
+    )
+}
 
 /// Transfer `amount` of `token_addr` from `from` (typically this escrow contract) to `treasury`,
 /// then verify SEP-41-style conservation: sender decreases and recipient increases by exactly

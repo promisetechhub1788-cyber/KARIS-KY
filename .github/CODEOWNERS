@@ -1,0 +1,14 @@
+# CODEOWNERS
+#
+# This file defines the default reviewers for security-sensitive paths.
+# See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Order matters: the last matching pattern takes precedence.
+
+# Default owners for everything in the repository.
+*                       @maintainers
+
+# Security-sensitive paths requiring maintainer review.
+/escrow/src/            @maintainers
+/scripts/deploy.sh      @maintainers
+/.github/workflows/     @maintainers

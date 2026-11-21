@@ -11,6 +11,31 @@ advisory bump workflow, and lockfile review process see
 
 ---
 
+## Dependabot grouping strategy
+
+Dependabot is configured in [`.github/dependabot.yml`](.github/dependabot.yml). To keep
+update PRs manageable, minor and patch updates are **grouped per ecosystem**:
+
+| Ecosystem | Group | Update types grouped | Rationale |
+|-----------|-------|----------------------|-----------|
+| `cargo` | `cargo-minor-patch` | `minor`, `patch` | Batches routine crate bumps into a single PR instead of one PR per crate. |
+| `npm` | `npm-minor-patch` | `minor`, `patch` | Batches routine JS tooling bumps into a single PR. |
+
+Rules:
+
+- **Minor and patch updates** for `cargo` and `npm` are collected into one grouped PR
+  per ecosystem, reducing PR noise.
+- **Major-version updates** are *not* grouped — each major bump arrives as its own
+  individual PR so it can be reviewed, tested, and merged in isolation.
+- **Auto-merge is not enabled.** Every grouped or individual PR requires manual review
+  and must pass CI before merge.
+- Grouped PRs are still subject to the lockfile review process described in
+  [`docs/escrow-dependency-policy.md`](docs/escrow-dependency-policy.md); review the
+  contained version bumps individually within the grouped PR.
+
+---
+=======
+
 ## Risk legend
 
 | Symbol | Meaning |

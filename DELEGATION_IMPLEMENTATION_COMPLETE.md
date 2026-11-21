@@ -171,7 +171,7 @@ Examples:
 ✅ **Fully backward compatible** with schema 6 instances:
 
 | Aspect | Status | Notes |
-|--------|--------|-------|
+|--------|-------|-------|
 | Old contract instances | ✅ Work | New keys absent, treated as defaults |
 | Legacy investor claims | ✅ Work | `claim_investor_payout` unchanged |
 | Data migration | ❌ Not needed | All keys optional |
@@ -259,85 +259,93 @@ let payout = client.compute_investor_payout(&investor_address);
 
 ```
 // Check all delegations were set (audit)
-let delegate = client.get_yield_claim_delegate(&investor);
-
-// Check if revoked
-let is_revoked = client.is_yield_claim_delegate_revoked(&investor);
-
-// Query claim status (unchanged from before)
-let claimed = client.is_investor_claimed(&investor);
+let delegate = client.get_yield_claim_delegate(&investor_address);
+let revoked = client.is_yield_claim_delegate_revoked(&investor_address);
 ```
 
 ---
 
-## Limitations & Future Enhancements
+## Yield Claim Delegation for Investors
 
-### Current Limitations (By Design)
-- **Single delegation per investor**: If multisig rotates keys, investor must re-delegate
-- **Investor revocation only**: Delegate cannot self-revoke (must ask investor)
-- **No delegation-chain**: Delegate cannot re-delegate (must be final claimant)
+This section explains how and why an investor would delegate their yield claim rights, and how to revoke a delegation.
 
-### Future Enhancements (Out of Scope)
-- Time-locked delegations (set expiry, auto-revoke)
-- Partial delegations (specific yield tier only)
-- Delegation chain (A→B→C)
-- Batch delegation operations
+### Why Delegate Claiming?
 
----
+Delegation lets an investor separate **who funded the position** from **who claims the yield**. Common use cases:
 
-## Key Decisions (Architecture)
+- **Multisig / governance custody**: Fund from a personal or treasury address, but let a multisig (e.g. a DAO treasury or operations multisig) claim the settlement payout. This avoids moving funds into the multisig before settlement.
+- **Custody segregation**: Keep the yield-generating position in escrow while routing the claim through a hardened, hardware-backed or institutional custody address.
+- **Operational handoff**: An investor funds a position but designates an operator (fund manager, accountant, or back-office) to handle the post-settlement claim so the investor does not need to be online at settlement time.
+- **Succession / continuity**: Designate a delegate so claims can still be executed if the primary investor key is temporarily unavailable.
 
-### Why Persistent Storage for Delegation?
-✅ Investor-scoped, per-claim rights (like contributions)  
-✅ Not touched during settlement (unlike instance keys)  
-✅ Consistent TTL management with investor yield keys  
-✅ Scales well (only active investors have keys)
+Delegation only affects **who may claim**; it does not transfer ownership of the contribution, and the investor can always claim directly themselves.
 
-### Why "Revoked" vs "Deleted"?
-✅ Audit trail: can see who was delegated to and when revoked  
-❌ Deleted keys harder to audit or recover from mistakes  
-❌ Can't distinguish "never delegated" from "deleted delegation"
+### Setting a Delegate (CLI)
 
-### Why Separate Entrypoint vs Parameter?
-✅ `claim_investor_payout_as_delegate(investor, delegate)` vs `claim_investor_payout(investor, delegate?)`  
-✅ Clear API: delegate always signs for delegate call  
-✅ Type safety: can't accidentally delegate-claim  
-❌ Original function unchanged, easier migration
+```
+# Delegate yield claim rights from the investor to a multisig/operator
+soroban contract invoke \
+  --id $ESCROW_CONTRACT_ID \
+  --source $INVESTOR_SECRET \
+  --network $NETWORK \
+  -- set_yield_claim_delegate \
+  --investor $INVESTOR_ADDRESS \
+  --delegate $DELEGATE_ADDRESS
+```
 
----
+After this call, both the investor and the delegate can claim the settlement payout. The delegate must sign the claim with their own key.
 
-## Support & References
+### Claiming as a Delegate (CLI)
 
-### Documentation
-- See: `/workspaces/KARIS-KY/YIELD_CLAIM_DELEGATION_SUMMARY.md`
-- ADRs: ADR-002 (auth), ADR-003 (settlement), ADR-004 (legal hold), ADR-005 (yield)
+```
+# Delegate claims the investor's settlement payout after settlement
+soroban contract invoke \
+  --id $ESCROW_CONTRACT_ID \
+  --source $DELEGATE_SECRET \
+  --network $NETWORK \
+  -- claim_investor_payout_as_delegate \
+  --investor $INVESTOR_ADDRESS \
+  --delegate $DELEGATE_ADDRESS
+```
 
-### Troubleshooting
-| Error | Cause | Fix |
-|-------|-------|-----|
-| `NoDelegationSet` (166) | Tried to claim without delegation | Set delegation first |
-| `DelegationRevoked` (167) | Delegation was revoked | Investor re-sets delegation |
-| `DelegateAddressSameAsInvestor` (165) | Tried self-delegation | Use different address |
-| `NoActiveDelegation` (168) | Revoked with no delegation | Set delegation first |
+### Revoking a Delegation (CLI)
 
-### Contact
-- Implementation: Kiro (AI assistant)
-- Review: karis-ky governance
-- Questions: Refer to ADRs in `/workspaces/KARIS-KY/docs/adr/`
+An investor can revoke a delegation at any time. Revocation blocks future delegate claims but preserves the delegate address for audit purposes.
 
----
+```
+# Revoke the active delegation
+soroban contract invoke \
+  --id $ESCROW_CONTRACT_ID \
+  --source $INVESTOR_SECRET \
+  --network $NETWORK \
+  -- revoke_yield_claim_delegate \
+  --investor $INVESTOR_ADDRESS
+```
 
-## Verification Results
+After revocation, only the investor can claim. Re-setting a delegate with `set_yield_claim_delegate` clears the revoked flag and re-enables delegate claiming.
 
-✅ **Code Parsing**: All syntax valid (AST parser confirms)  
-✅ **Structure**: All functions, events, types present  
-✅ **Tests**: 13 comprehensive tests defined  
-✅ **Imports**: All modules properly imported  
-✅ **Errors**: All error codes 165-168 defined  
-✅ **Events**: Both delegation events defined  
-✅ **Compatibility**: Backward compatible (additive only)  
-✅ **Guards**: ADR-002 compliant authorization ordering  
+### Checking Delegation State (CLI)
 
----
+```
+# Read the current delegate (returns null if none set)
+soroban contract invoke \
+  --id $ESCROW_CONTRACT_ID \
+  --network $NETWORK \
+  -- get_yield_claim_delegate \
+  --investor $INVESTOR_ADDRESS
 
-**Ready for `cargo test` and production deployment! 🚀**
+# Check whether the delegation has been revoked
+soroban contract invoke \
+  --id $ESCROW_CONTRACT_ID \
+  --network $NETWORK \
+  -- is_yield_claim_delegate_revoked \
+  --investor $INVESTOR_ADDRESS
+```
+
+### Notes and Constraints
+
+- The delegate address must differ from the investor address (error 165 otherwise).
+- Claiming via a delegate requires an active, non-revoked delegation (errors 166/167 otherwise).
+- Revoking when no delegation is active fails with error 168.
+- Legal holds and settlement/lock gates apply to delegate claims exactly as they do to investor claims.
+- Claims are write-once: once the payout is claimed (by investor or delegate), further claims are no-ops.

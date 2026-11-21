@@ -26,7 +26,7 @@ DEFAULT_WASM = "target/wasm32-unknown-unknown/release/karis_ky_escrow.wasm"
 DEFAULT_BASELINE = "scripts/wasm_size_baseline.json"
 
 ABSOLUTE_LIMIT_BYTES = 1_000_000          # 1 MB hard cap
-RELATIVE_INCREASE_THRESHOLD = 0.10        # 10% growth alert threshold
+RELATIVE_INCREASE_THRESHOLD = 0.10        # 10% growth hard-fail threshold
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -135,6 +135,8 @@ def check_size(wasm_path: Path, baseline_path: Path, record: bool) -> int:
         print()
 
         if pct > RELATIVE_INCREASE_THRESHOLD:
+            # Hard CI failure: growth beyond the threshold is not merely reported,
+            # it sets `failed` so check_size() returns a non-zero exit code.
             print(
                 f"ALERT  [relative] Size grew {pct:.1%} (threshold: {RELATIVE_INCREASE_THRESHOLD:.0%}). "
                 f"Baseline was {_human(baseline_bytes)}, now {_human(current_bytes)}.",
@@ -214,6 +216,7 @@ def main() -> None:
         baseline_path=Path(args.baseline),
         record=args.record,
     )
+    # Non-zero exit code fails the CI job (hard failure, not just a report).
     sys.exit(exit_code)
 
 

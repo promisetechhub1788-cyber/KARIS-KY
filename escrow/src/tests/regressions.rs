@@ -18,6 +18,7 @@
 //! | `test_regression_206_dust_sweep_underflow` | INC-206 | Dust sweep arithmetic underflow with zero funded_amount |
 //! | `test_regression_207_funding_deadline_edge` | INC-207 | Funding accepted at exact deadline boundary |
 //! | `test_regression_208_invoice_id_null_byte` | INC-208 | Invoice ID with embedded null byte passed validation |
+//! | `test_regression_210_archive_with_unclaimed_payouts` | INC-210 | Escrow archived while investor payout was still unclaimed |
 //!
 //! ## How to add a new regression test
 //!
@@ -420,4 +421,62 @@ fn test_regression_209_target_below_funded() {
 
     // Setting target below already-funded amount must panic
     client.update_funding_target(&40_000_000_000i128);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// INC-210: Escrow archived while investor payout was still unclaimed
+//          See: docs/incidents/INC-210.md
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Regression test for INC-210: archiving with unclaimed payouts.
+///
+/// A settled escrow could be archived even though an investor had not yet
+/// claimed their payout, permanently locking the funds. Archiving must be
+/// rejected while any investor payout remains unclaimed, and must succeed
+/// once every investor has claimed.
+#[test]
+fn test_regression_210_archive_with_unclaimed_payouts() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    let (token, treasury) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "REG210"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let investor = Address::generate(&env);
+    client.fund(&investor, &TARGET);
+    client.settle();
+
+    // The investor has not claimed yet — archiving must be rejected.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.archive_escrow();
+    }));
+    assert!(
+        result.is_err(),
+        "INC-210: archive_escrow must be rejected while a payout is unclaimed"
+    );
+
+    // Once the investor claims, archiving must succeed.
+    client.claim_investor_payout(&investor);
+    client.archive_escrow();
 }

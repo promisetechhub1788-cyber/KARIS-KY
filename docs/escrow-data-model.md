@@ -234,3 +234,17 @@ callers (`sweep_terminal_dust`, `refund`) also use them instead of inlining the
 - **Storage growth:** per-address investor keys use persistent storage to avoid unbounded instance
   growth. `MaxUniqueInvestorsCap` can still bound investor count. Any schema change that adds
   per-address keys must re-evaluate storage footprint and TTL behavior.
+
+## Funding Statistics (`get_funding_stats`)
+
+To query funding progress and unique investor cardinality in a single RPC round-trip without reading the entire state or separate storage keys, callers can invoke `get_funding_stats`:
+
+```rust
+pub struct FundingStats {
+    pub funded_amount: i128,
+    pub funding_target: i128,
+    pub unique_funder_count: u32,
+    pub status: u32,
+}
+```
+

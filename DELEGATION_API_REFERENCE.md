@@ -1,5 +1,11 @@
 # Yield Claim Delegation - API Reference
 
+## Overview
+
+This document is the API reference for yield claim delegation. For an
+investor-facing walkthrough (use cases, revocation, and CLI/SDK examples),
+see the delegation section in `investor-quick-start.md`.
+
 ## Public Entrypoints
 
 ### 1. `set_yield_claim_delegate`
@@ -328,178 +334,13 @@ pub struct YieldClaimDelegationRevoked {
             │   │  • YieldClaimDelegateRevoked = true     │
             │   │  • Claim by: investor only              │
             │   └─────────────────────────────────────────┘
-            │           │
-            │           ↑
-            └─→ set_yield_claim_delegate() (overwrites)
-                    ↓
-                (back to Active)
+            │
+            └─→ set_yield_claim_delegate()
+                        ↓
+                (back to Active Delegation)
 ```
 
----
-
-## Authorization Model (ADR-002)
-
-All delegation operations follow strict guard ordering:
-
-### `set_yield_claim_delegate` Flow
-
-```
-┌─ Read-Only Preconditions ─┐
-│ • Validate delegate ≠ investor
-└─────────────────────────────┘
-           ↓
-┌─ Authorization ─────────┐
-│ • investor.require_auth()
-└──────────────────────────┘
-           ↓
-┌─ Storage & Events ──────┐
-│ • Set delegate
-│ • Clear revocation flag
-│ • Emit event
-└────────────────────────┘
-```
-
-### `claim_investor_payout_as_delegate` Flow
-
-```
-┌─ Read-Only Preconditions ─────────────┐
-│ • Legal hold active?
-│ • Investor contribution > 0?
-│ • Delegation exists?
-│ • Delegation revoked?
-│ • Right delegate?
-│ • Escrow settled?
-│ • Claim lock expired?
-└────────────────────────────────────────┘
-           ↓
-┌─ Authorization ──────────┐
-│ • delegate.require_auth()
-└──────────────────────────┘
-           ↓
-┌─ Storage & Events ────┐
-│ • Set InvestorClaimed
-│ • Emit event
-└──────────────────────┘
-```
-
----
-
-## Best Practices
-
-### For Investors
-
-1. **Set delegation early** (right after funding)
-   ```rust
-   client.fund(&investor, &amount);
-   client.set_yield_claim_delegate(&investor, &delegate);
-   ```
-
-2. **Verify delegation was set**
-   ```rust
-   let stored = client.get_yield_claim_delegate(&investor);
-   assert_eq!(stored, Some(delegate));
-   ```
-
-3. **Revoke before changing delegates**
-   ```rust
-   client.revoke_yield_claim_delegate(&investor);
-   client.set_yield_claim_delegate(&investor, &new_delegate);
-   ```
-
-### For Delegates
-
-1. **Check delegation is active before claiming**
-   ```rust
-   let delegate_addr = client.get_yield_claim_delegate(&investor);
-   assert_eq!(delegate_addr, Some(my_address));
-   assert!(!client.is_yield_claim_delegate_revoked(&investor));
-   ```
-
-2. **Handle idempotency gracefully**
-   ```rust
-   // Safe to call multiple times (no re-emit)
-   client.claim_investor_payout_as_delegate(&investor, &delegate);
-   ```
-
-3. **Verify claim succeeded**
-   ```rust
-   let claimed = client.is_investor_claimed(&investor);
-   assert!(claimed);
-   ```
-
-### For Indexers
-
-1. **Track delegation changes**
-   ```
-   YieldClaimDelegationSet → new delegation active
-   YieldClaimDelegationRevoked → delegation no longer usable
-   InvestorPayoutClaimed → claim recorded (works for both direct & delegate)
-   ```
-
-2. **Compute delegation status**
-   ```
-   delegation_active = (
-       YieldClaimDelegate set 
-       && YieldClaimDelegateRevoked = false
-   )
-   ```
-
----
-
-## Interaction with Other Features
-
-### Legal Hold
-- Blocks both `claim_investor_payout` and `claim_investor_payout_as_delegate` (same error 125)
-- Does not prevent `set_yield_claim_delegate` or `revoke_yield_claim_delegate`
-
-### Tiered Yield & Commitment Locks
-- Yield computation same whether claimed by investor or delegate
-- Commitment lock gates respected by both
-- No change to yield_bps or claim_not_before logic
-
-### Allowlisting
-- Delegation only affects **claiming**, not **funding**
-- Investor must be allowlisted to fund (unchanged)
-- Delegate does not need to be allowlisted
-
-### Settlement & Maturity
-- Maturity gate checked same for both (status = 2, maturity reached)
-- Claim lock (`InvestorClaimNotBefore`) gated same for both
-- Pro-rata computation unchanged
-
----
-
-## Testing
-
-See `/workspaces/KARIS-KY/escrow/src/tests/delegation.rs` for:
-- 13 comprehensive tests
-- Error case coverage
-- State machine verification
-- Event emission checks
-- Integration scenarios
-
-Run tests with:
-```bash
-cd escrow
-cargo test delegation
-```
-
----
-
-## Changelog
-
-| Version | Date | Change |
-|---------|------|--------|
-| 1.0 | 2026-07-25 | Initial delegation API release |
-
-**Schema Version**: 7 (additive-only, backward compatible with v6)
-
----
-
-## Questions?
-
-Refer to:
-- `YIELD_CLAIM_DELEGATION_SUMMARY.md` – Architecture & rationale
-- `docs/adr/ADR-002-auth-boundaries.md` – Authorization model
-- `docs/adr/ADR-003-settlement-flow.md` – Settlement interaction
-- `docs/adr/ADR-004-legal-hold.md` – Legal hold interaction
+**Notes:**
+- Revocation is not deletion: the delegate address is retained for audit.
+- Re-setting a delegation clears the revoked flag and activates the new delegate.
+- The investor can always claim directly regardless of delegation state.

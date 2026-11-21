@@ -543,6 +543,25 @@ curl https://horizon-testnet.stellar.org/ledgers/latest | jq '.closed_at'
 
 **Reference**: [escrow-ledger-time.md](escrow-ledger-time.md)
 
+### 20. Attestation log disappeared
+
+**Symptom:**
+`get_attestation_append_log()` returns no entries or the attestation data is no longer
+  available for an escrow that previously had records.
+
+**Cause:**
+The attestation append log is stored in instance storage. If the contract instance TTL was
+not extended before expiry, instance entries may have been archived or evicted.
+
+**Solution:**
+1. Check the contract instance's TTL and archival status using the network's RPC tools.
+2. If the entry is archived, follow the network's supported restoration procedure before
+   querying the contract again. Calling `bump_ttl` regularly before expiry prevents this
+   risk; it does not guarantee recovery of already-evicted data.
+3. Rebuild the audit history from `AttestationDigestAppended` events and durable off-chain
+   records if the log cannot be restored. See [Escrow Attestations](escrow-attestations.md)
+   and [TTL semantics and operational `bump_ttl`](escrow-gas-storage-notes.md).
+
 ---
 
 ## Diagnostic Commands
@@ -599,11 +618,11 @@ If issues persist after following this guide:
 
 ## References
 
-- [ADR-001: State Model](docs/adr/ADR-001-state-model.md)
-- [ADR-002: Auth Boundaries](docs/adr/ADR-002-auth-boundaries.md)
-- [ADR-003: Settlement Flow](docs/adr/ADR-003-settlement-flow.md)
-- [ADR-004: Legal Hold](docs/adr/ADR-004-legal-hold.md)
-- [ADR-005: Tiered Yield](docs/adr/ADR-005-tiered-yield.md)
+- [ADR-001: State Model](adr/ADR-001-state-model.md)
+- [ADR-002: Auth Boundaries](adr/ADR-002-auth-boundaries.md)
+- [ADR-003: Settlement Flow](adr/ADR-003-settlement-flow.md)
+- [ADR-004: Legal Hold](adr/ADR-004-legal-hold.md)
+- [ADR-005: Tiered Yield](adr/ADR-005-tiered-yield.md)
 - [escrow-error-messages.md](escrow-error-messages.md) — Full error code reference
 - [escrow-pro-rata.md](escrow-pro-rata.md) — Payout math
 - [OPERATOR_RUNBOOK.md](OPERATOR_RUNBOOK.md) — Deployment and operations

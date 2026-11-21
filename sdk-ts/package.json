@@ -13,21 +13,27 @@
     "build": "tsc",
     "prepublishOnly": "npm run build",
     "example": "ts-node examples/basic-usage.ts",
+    "full-lifecycle": "ts-node examples/full-lifecycle.ts",
     "lint": "eslint src/ examples/",
-    "test": "jest"
+    "test": "jest --preset ts-jest"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^13.0.0"
   },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "@types/node": "^20.0.0",
+    "@types/jest": "^29.0.0",
     "typescript": "^5.4.0",
     "ts-node": "^10.9.0",
     "eslint": "^8.0.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.0.0",
     "jest": "^29.0.0",
-    "ts-jest": "^29.0.0"
+    "ts-jest": "^29.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.4.0"
   },
   "engines": {
     "node": ">=18.0.0"

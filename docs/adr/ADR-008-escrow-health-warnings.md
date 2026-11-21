@@ -48,7 +48,7 @@ pub struct EscrowHealthWarning {
 | 4001 | `LowFundingRatio` | `funded_ratio_bps < 5000` (< 50%) when open or any status |
 | 4002 | `CloseToMaturity` | `0 < time_to_maturity_secs < 86400` (< 1 day) with healthy funding |
 | 4003 | `OverMaturity` | `time_to_maturity_secs < 0` and `status == 0` (open) and `unfunded` |
-| 4004 | `FundingStalled` | Reserved for future use (no deposits in extended period) |
+| 4004 | `FundingStalled` | No new funding activity for longer than configured `FundingStallThresholdSecs` while escrow is open (`status == 0`) and underfunded (`funded_amount < funding_target`) |
 | 0 | No warning | Default / no risk condition detected |
 
 ### 3. Health Computation Logic
@@ -65,8 +65,21 @@ time_to_maturity_secs = maturity - now
 ```
 Returns `i64::MAX` if `maturity == 0` (no constraint); negative if past maturity.
 
-**Determination:**
-- If `time_to_maturity_secs < 0` AND `status == 0` AND `funded_amount < funding_target` → **4003** (OverMaturity).
+**Funding staleness (seconds):**
+```
+if FundingStallThresholdSecs is configured and > 0:
+    if LastFundLedgerTimestamp exists:
+        time_since_last_fund = now - LastFundLedgerTimestamp
+    else:
+        time_since_last_fund = now - CreatedAt
+    is_stalled = time_since_last_fund > FundingStallThresholdSecs
+else:
+    is_stalled = false
+```
+
+**Determination (priority order):**
+- If `is_stalled` AND `status == 0` AND `funded_amount < funding_target` → **4004** (FundingStalled).
+- Else if `time_to_maturity_secs < 0` AND `status == 0` AND `funded_amount < funding_target` → **4003** (OverMaturity).
 - Else if `0 <= time_to_maturity_secs < 86400` (1 day):
   - If `funded_ratio_bps < 5000` → **4001** (LowFundingRatio).
   - Else → **4002** (CloseToMaturity).
@@ -96,10 +109,19 @@ pub fn check_escrow_health(env: Env) -> (u32, i64, i64) {
 
 ### 6. Storage & Backward Compatibility
 
-- **No new persistent storage keys** required; warnings are events only.
+**New Persistent Keys:**
+- `DataKey::FundingStallThresholdSecs`: optional configurable staleness threshold (seconds), set at init; absent ⇒ no stall detection.
+- `DataKey::LastFundLedgerTimestamp`: updated on every successful `fund` / `fund_with_commitment` call; absent ⇒ never funded.
+
+**Existing Storage:**
+- No modification to existing persistent keys.
+- `DataKey::CreatedAt` is used to compute staleness when no funding has occurred.
+
+**Backward Compatibility:**
+- **Additive keys**: warnings are events only; no schema version bump required.
 - **Additive event type**: existing contract instances can upgrade without redeploy.
-- **No schema version bump**: `SCHEMA_VERSION` remains unchanged.
 - **Non-blocking guarantee**: warnings never prevent valid escrow operations.
+- Old instances will not have `FundingStallThresholdSecs` set; they will not emit code 4004 warnings unless explicitly upgraded and reinitialized with the threshold.
 
 ---
 
@@ -135,10 +157,11 @@ pub fn check_escrow_health(env: Env) -> (u32, i64, i64) {
 
 ### Future Enhancements
 
-- **Configurable thresholds**: admin may adjust warning ratios per escrow instance.
 - **Per-investor health**: warn when an investor's commitment lock expires soon.
-- **Scheduled health checks**: emit warnings at fixed intervals (e.g., weekly) to catch stalled funding.
+- **Admin-configurable thresholds**: allow admin to update or remove stall threshold post-init (out of scope for #232).
+- **Scheduled health checks**: emit warnings at fixed intervals (e.g., weekly) to catch escrows approaching staleness.
 - **Integration with legal hold**: auto-trigger legal hold if OverMaturity threshold crossed.
+- **Multi-stage escalation**: warn at 50% threshold, 75%, etc. before stalling entirely.
 
 ---
 
@@ -164,6 +187,11 @@ pub fn check_escrow_health(env: Env) -> (u32, i64, i64) {
 - `test_health_warning_close_to_maturity`: verify 4002 emission.
 - `test_health_warning_low_funding_close_to_maturity`: verify 4001 takes priority.
 - `test_health_warning_over_maturity_unfunded`: verify 4003 emission.
+- `test_health_warning_funding_stalled_after_threshold`: verify 4004 emission when stall duration exceeded.
+- `test_no_health_warning_funding_not_stalled`: verify no 4004 before threshold.
+- `test_no_warning_stall_threshold_not_configured`: verify no 4004 when threshold not set.
+- `test_no_warning_funding_stalled_but_fully_funded`: verify no 4004 when escrow is funded (status != 0).
+- `test_funding_stalled_never_funded_escrow`: verify 4004 for never-funded escrows after threshold.
 - `test_no_health_warning_healthy_escrow`: verify code 0 when healthy.
 - `test_no_health_warning_no_maturity_constraint`: verify no time-based warnings when maturity == 0.
 - `test_no_health_warning_settled_escrow`: verify settled escrows emit no warnings.
@@ -174,17 +202,19 @@ pub fn check_escrow_health(env: Env) -> (u32, i64, i64) {
 - Verify health warnings are emitted alongside existing state-change events.
 - Verify multiple warnings do not break transaction atomicity.
 - Verify `check_escrow_health()` returns correct metrics without auth.
+- Verify stall detection correctly compares against both `LastFundLedgerTimestamp` and `CreatedAt`.
 
 ### Fuzz Tests
 
 - Random state transitions + maturity advances; verify warning type is always in range [0, 4004].
 - Extreme values (i128::MIN / MAX funded amounts) do not panic or overflow.
+- Random stall thresholds with various funding timelines.
 
 ---
 
 ## References
 
-- [ADR-001: State Model](docs/adr/ADR-001-state-model.md)
-- [ADR-002: Auth Boundaries](docs/adr/ADR-002-auth-boundaries.md)
-- [Escrow Error Messages](docs/escrow-error-messages.md)
+- [ADR-001: State Model](ADR-001-state-model.md)
+- [ADR-002: Auth Boundaries](ADR-002-auth-boundaries.md)
+- [Escrow Error Messages](../escrow-error-messages.md)
 - [Issue #231](https://github.com/karis-ky/escrow-contracts/issues/231)

@@ -23,6 +23,54 @@
 //! cargo build -p karis_ky_escrow
 //! ```
 //!
+//! ## Running the Example
+//!
+//! CI builds and runs this example on every pull request so it cannot rot.
+//! Run it locally with either of:
+//!
+//! ```bash
+//! cargo run --example basic_workflow
+//! # or the test-gated equivalent (runs the lifecycle assertions):
+//! cargo test -p karis_ky_escrow --example basic_workflow -- --nocapture
+//! ```
+//!
+//! A failure in any of the example scenarios fails CI.
+//!
+//! ## Expected Output
+//!
+//! Running `cargo run --example basic_workflow` prints the banner below and
+//! exits with status `0`:
+//!
+//! ```text
+//! karis-ky Escrow SDK Examples
+//! ===========================
+//!
+//! This file contains example code demonstrating common patterns
+//! for interacting with the LiquifactEscrow contract.
+//!
+//! Run with: cargo test -p karis_ky_escrow
+//!
+//! For detailed documentation, see:
+//!   - docs/escrow-data-model.md
+//!   - docs/escrow-events.md
+//!   - docs/escrow-security-checklist.md
+//!   - README.md
+//! ```
+//!
+//! The test-gated scenarios assert the following lifecycle transitions and
+//! must all pass:
+//!
+//! - **init → fund → settle → claim** (`example_basic_workflow_init_fund_settle_claim`):
+//!   status goes `0` (Open) → `1` (Funded) → `2` (Settled); the investor's
+//!   contribution equals the invoice amount; `is_investor_claimed` is `true`
+//!   after the first claim and stays `true` after a second (idempotent) claim.
+//! - **Yield-token workflow** (`example_yield_token_workflow`): `get_yield_token`
+//!   returns the configured token; fund → settle → claim succeeds.
+//! - **NFT mint workflow** (`example_nft_mint_workflow`): `get_nft_contract`
+//!   returns the configured contract; settle reaches status `2`; claim succeeds.
+//! - **Tiered yield** (Example 2): short-lock investor claims after 30 days,
+//!   long-lock investor remains locked until 90 days, then both are claimed.
+//!
 //! ---
 
 use karis_ky_escrow::{
@@ -908,6 +956,11 @@ fn main() {
     println!("for interacting with the LiquifactEscrow contract.");
     println!();
     println!("Run with: cargo test -p karis_ky_escrow");
+    println!("      or: cargo test -p karis_ky_escrow --example basic_workflow -- --nocapture");
+    println!();
+    println!("Expected: all example scenarios pass (init -> fund -> settle -> claim,");
+    println!("yield-token, NFT mint, and tiered yield). CI runs this example and");
+    println!("fails the build if any scenario fails.");
     println!();
     println!("For detailed documentation, see:");
     println!("  - docs/escrow-data-model.md");
